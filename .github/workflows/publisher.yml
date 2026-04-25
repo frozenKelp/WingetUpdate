@@ -1,0 +1,33 @@
+name: 2. Publish Moku to WinGet
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'The tag (e.g., v0.9.0)'
+        required: true
+
+jobs:
+  publish-pr:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Download WingetCreate
+        run: Invoke-WebRequest -Uri https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+
+      - name: Build Installer URL
+        id: build_url
+        shell: pwsh
+        run: |
+          $TAG = "${{ inputs.version }}"       # e.g., v0.9.0
+          $VERSION = $TAG.TrimStart('v')       # e.g., 0.9.0
+          
+          # This matches your provided URL structure exactly
+          $URL = "https://github.com/Youwes09/Moku/releases/download/$TAG/Moku_$($VERSION)_x64-setup.exe"
+          
+          echo "installer_url=$URL" >> $env:GITHUB_OUTPUT
+          echo "Clean version is $VERSION"
+
+      - name: Submit PR to WinGet-Pkgs
+        run: |
+          .\wingetcreate.exe update Moku.Moku --version "${{ inputs.version }}" --urls "${{ steps.build_url.outputs.installer_url }}" --token "${{ secrets.PAT_TOKEN }}"
