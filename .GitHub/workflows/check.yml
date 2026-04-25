@@ -1,0 +1,53 @@
+name: 1. Check for Upstream Updates
+
+on:
+  schedule:
+    - cron: '0 */12 * * *' # Runs every 12 hours
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  check-updates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+      
+    steps:
+      - name: Checkout tracking repository
+        uses: actions/checkout@v4
+
+      - name: Check upstream release
+        id: version_check
+        run: |
+          # 1. Get the latest release JSON
+          RELEASE_DATA=$(curl -sL https://api.github.com/repos/Youwes09/Moku/releases/latest)
+          
+          # 2. Extract Tag and the specific .exe download URL
+          LATEST_TAG=$(echo "$RELEASE_DATA" | jq -r .tag_name)
+          INSTALLER_URL=$(echo "$RELEASE_DATA" | jq -r '.assets[] | select(.name | endswith("_x64-setup.exe")) | .browser_download_url' | head -n 1)
+          
+          CURRENT_TRACKED=$(cat current_version.txt || echo "none")
+
+          if [ "$LATEST_TAG" != "$CURRENT_TRACKED" ] && [ "$LATEST_TAG" != "null" ]; then
+            echo "new_version=$LATEST_TAG" >> $GITHUB_OUTPUT
+            echo "installer_url=$INSTALLER_URL" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Trigger Publisher Workflow
+        if: steps.version_check.outputs.new_version != ''
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          gh workflow run publisher.yml \
+            -f version="${{ steps.version_check.outputs.new_version }}" \
+            -f url="${{ steps.version_check.outputs.installer_url }}"
+
+      - name: Update tracked version file
+        if: steps.version_check.outputs.new_version != ''
+        run: |
+          echo "${{ steps.version_check.outputs.new_version }}" > current_version.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add current_version.txt
+          git commit -m "chore: track upstream version ${{ steps.version_check.outputs.new_version }}"
+          git push
