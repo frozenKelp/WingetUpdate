@@ -30,7 +30,11 @@ jobs:
 
       - name: Submit PR to WinGet-Pkgs
         run: |
+
+          $TargetVersion = "${{ inputs.version }}"
+          $TargetUrl = "${{ steps.build_url.outputs.installer_url }}"
+          
           .\wingetcreate.exe update Moku.Moku `
-          --version "${{ inputs.version }}" `
-          --urls "${{ steps.build_url.outputs.installer_url }}" `
+          --version $TargetVersion `
+          --urls $TargetUrl `
           --token "${{ secrets.PAT_TOKEN }}" --submit --interactive false
