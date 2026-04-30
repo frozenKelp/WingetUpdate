@@ -69,9 +69,13 @@ jobs:
           Invoke-WebRequest -Uri "https://aka.ms/wingetcreate/latest" `
                             -OutFile wingetcreate.exe `
                             -UseBasicParsing
-          # `version` is a subcommand, not a --flag; --version exits with code 1
-          $ver = & .\wingetcreate.exe version 2>&1
-          Write-Host "✓ wingetcreate $ver"
+          # NOTE: wingetcreate exits 1 for every info/version subcommand — skip the
+          # version check. The update step below is the real proof it works.
+          if (-not (Test-Path wingetcreate.exe)) {
+            Write-Error "wingetcreate.exe not found after download."
+            exit 1
+          }
+          Write-Host "✓ wingetcreate.exe downloaded ($('{0:N0}' -f (Get-Item wingetcreate.exe).Length) bytes)"
 
       # ── 4. Generate manifests ──────────────────────────────────────────────
       - name: Run wingetcreate update
