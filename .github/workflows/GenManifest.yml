@@ -69,7 +69,8 @@ jobs:
           Invoke-WebRequest -Uri "https://aka.ms/wingetcreate/latest" `
                             -OutFile wingetcreate.exe `
                             -UseBasicParsing
-          $ver = & .\wingetcreate.exe --version 2>&1
+          # `version` is a subcommand, not a --flag; --version exits with code 1
+          $ver = & .\wingetcreate.exe version 2>&1
           Write-Host "✓ wingetcreate $ver"
 
       # ── 4. Generate manifests ──────────────────────────────────────────────
