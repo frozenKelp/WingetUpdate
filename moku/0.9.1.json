@@ -1,0 +1,6 @@
+{
+  "version": "0.9.1",
+  "InstallerURL": "https://github.com/moku-project/Moku/releases/download/v0.9.1/Moku_0.9.1_x64-setup.exe",
+  "InstallerHash": {"sha256": "c03a0334e88a1e92185e7b383b5c1fc3d7cb325a9fc1a01e9da7cc24576fa254"},
+  "ReleaseDate": "27-04-2026"
+}
