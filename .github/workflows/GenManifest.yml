@@ -1,0 +1,222 @@
+name: "Generate & Validate Manifests"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reads installer metadata from moku/<version>.json, uses wingetcreate to
+# produce the three YAML manifest files, post-processes them (ReleaseDate,
+# ReleaseNotes), validates with `winget validate`, then commits the result to
+#   manifests/m/Moku/Moku/<version>/
+#
+# Does NOT submit a PR – inspect the committed manifests first, then run
+# workflow 3 when you're happy.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >
+          Version to generate manifests for, e.g. 0.9.1.
+          Leave empty to use latestVersion from moku/meta.json.
+        required: false
+        type: string
+
+jobs:
+  generate-manifests:
+    runs-on: windows-latest        # wingetcreate + winget both require Windows
+    permissions:
+      contents: write
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Resolve version & read version JSON ─────────────────────────────
+      - name: Resolve version and load metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $metaRaw  = Get-Content moku/meta.json -Raw | ConvertFrom-Json
+          $version  = "${{ inputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = $metaRaw.latestVersion
+          }
+
+          $vFile = "moku/$version.json"
+          if (-not (Test-Path $vFile)) {
+            Write-Error "Version file '$vFile' not found. Run workflow 1 (Update Metadata) first."
+            exit 1
+          }
+
+          $vdata = Get-Content $vFile -Raw | ConvertFrom-Json
+
+          "version=$version"                         >> $env:GITHUB_OUTPUT
+          "installer_url=$($vdata.installerUrl)"     >> $env:GITHUB_OUTPUT
+          "release_notes_url=$($vdata.releaseNotesUrl)" >> $env:GITHUB_OUTPUT
+          "published_at=$($vdata.publishedAt)"       >> $env:GITHUB_OUTPUT
+
+          # Stash multi-line release notes to a temp file
+          $vdata.releaseNotes | Set-Content "$env:TEMP\release_notes.txt" -Encoding UTF8
+
+          Write-Host "✓ Generating manifests for Moku $version"
+          Write-Host "  Installer : $($vdata.installerUrl)"
+
+      # ── 3. Install wingetcreate ────────────────────────────────────────────
+      - name: Install wingetcreate
+        shell: pwsh
+        run: |
+          Write-Host "Downloading wingetcreate…"
+          Invoke-WebRequest -Uri "https://aka.ms/wingetcreate/latest" `
+                            -OutFile wingetcreate.exe `
+                            -UseBasicParsing
+          $ver = & .\wingetcreate.exe --version 2>&1
+          Write-Host "✓ wingetcreate $ver"
+
+      # ── 4. Generate manifests ──────────────────────────────────────────────
+      - name: Run wingetcreate update
+        id: generate
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version      = "${{ steps.meta.outputs.version }}"
+          $installerUrl = "${{ steps.meta.outputs.installer_url }}"
+          $rnUrl        = "${{ steps.meta.outputs.release_notes_url }}"
+
+          Write-Host "Running wingetcreate update…"
+          & .\wingetcreate.exe update Moku.Moku `
+              --version             $version `
+              --urls                $installerUrl `
+              --release-notes-url   $rnUrl `
+              --out                 . `
+              --token               $env:GH_TOKEN
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "wingetcreate exited with code $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+
+          $manifestDir = "manifests/m/Moku/Moku/$version"
+          if (-not (Test-Path $manifestDir)) {
+            # wingetcreate sometimes places output elsewhere – search for it
+            $found = Get-ChildItem -Recurse -Filter "Moku.Moku.yaml" | Select-Object -First 1
+            if ($found) {
+              Write-Host "Found manifests at: $($found.DirectoryName)"
+              $manifestDir = $found.DirectoryName
+            } else {
+              Write-Error "Could not find generated manifest files."
+              exit 1
+            }
+          }
+
+          "manifest_dir=$manifestDir" >> $env:GITHUB_OUTPUT
+          Write-Host "✓ Manifests generated:"
+          Get-ChildItem $manifestDir | Format-Table Name, Length
+
+      # ── 5. Post-process: inject ReleaseDate ────────────────────────────────
+      - name: Inject ReleaseDate into installer manifest
+        shell: pwsh
+        run: |
+          $manifestDir  = "${{ steps.generate.outputs.manifest_dir }}"
+          $releaseDate  = "${{ steps.meta.outputs.published_at }}"
+          $installerYaml = "$manifestDir/Moku.Moku.installer.yaml"
+
+          $content = Get-Content $installerYaml -Raw
+          if ($content -notmatch "^ReleaseDate:" -and $content -notmatch "`nReleaseDate:") {
+            # Append before ManifestType line so it stays in the right section
+            $content = $content -replace "(^ManifestType:)", "ReleaseDate: $releaseDate`n`$1"
+            Set-Content $installerYaml $content -NoNewline
+            Write-Host "✓ Added ReleaseDate: $releaseDate"
+          } else {
+            Write-Host "  ReleaseDate already present – skipping"
+          }
+
+      # ── 6. Post-process: inject inline ReleaseNotes into locale manifest ───
+      - name: Inject ReleaseNotes into locale manifest
+        shell: pwsh
+        run: |
+          $manifestDir = "${{ steps.generate.outputs.manifest_dir }}"
+          $localeYaml  = "$manifestDir/Moku.Moku.locale.en-US.yaml"
+          $notesFile   = "$env:TEMP\release_notes.txt"
+
+          if (-not (Test-Path $notesFile)) {
+            Write-Host "  No release notes found – skipping"
+            return
+          }
+
+          $notes   = Get-Content $notesFile -Raw
+          $content = Get-Content $localeYaml -Raw
+
+          if ([string]::IsNullOrWhiteSpace($notes)) {
+            Write-Host "  Release notes are empty – skipping"
+            return
+          }
+
+          if ($content -match "^ReleaseNotes:" -or $content -match "`nReleaseNotes:") {
+            Write-Host "  ReleaseNotes already present – skipping"
+            return
+          }
+
+          # Build a properly indented YAML block-scalar
+          $indented = ($notes.Trim() -split "`n" | ForEach-Object { "  $_" }) -join "`n"
+          $yamlBlock = "ReleaseNotes: |-`n$indented"
+
+          # Insert before ReleaseNotesUrl (or before ManifestType as fallback)
+          if ($content -match "ReleaseNotesUrl:") {
+            $content = $content -replace "(ReleaseNotesUrl:)", "$yamlBlock`n`$1"
+          } else {
+            $content = $content -replace "(^ManifestType:)", "$yamlBlock`n`$1"
+          }
+
+          Set-Content $localeYaml $content -NoNewline
+          Write-Host "✓ Injected ReleaseNotes into locale manifest"
+
+      # ── 7. Validate with winget ────────────────────────────────────────────
+      - name: Validate manifests with winget
+        shell: pwsh
+        run: |
+          $manifestDir = "${{ steps.generate.outputs.manifest_dir }}"
+
+          Write-Host "Running: winget validate --manifest $manifestDir"
+          $output = & winget.exe validate --manifest $manifestDir 2>&1
+          Write-Host $output
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "winget validate failed (exit $LASTEXITCODE). Fix the manifests before proceeding."
+            exit $LASTEXITCODE
+          }
+          Write-Host "✓ Validation passed"
+
+      # ── 8. Show final manifest content ────────────────────────────────────
+      - name: Display generated manifests
+        shell: pwsh
+        run: |
+          $manifestDir = "${{ steps.generate.outputs.manifest_dir }}"
+          foreach ($file in (Get-ChildItem $manifestDir -Filter "*.yaml")) {
+            Write-Host ""
+            Write-Host "════════ $($file.Name) ════════"
+            Get-Content $file.FullName
+          }
+
+      # ── 9. Commit and push ─────────────────────────────────────────────────
+      - name: Commit & push manifests
+        shell: pwsh
+        run: |
+          $version     = "${{ steps.meta.outputs.version }}"
+          $manifestDir = "${{ steps.generate.outputs.manifest_dir }}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add $manifestDir
+          $status = git status --porcelain
+          if ([string]::IsNullOrWhiteSpace($status)) {
+            Write-Host "Nothing changed – manifests already committed."
+          } else {
+            git commit -m "feat(manifests): generate Moku.Moku v$version"
+            git push
+            Write-Host "✓ Manifests committed and pushed for v$version"
+            Write-Host ""
+            Write-Host "Next step: review the files in $manifestDir, then"
+            Write-Host "run workflow '3 · Submit PR to winget-pkgs' when ready."
+          }

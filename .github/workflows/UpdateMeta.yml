@@ -1,0 +1,185 @@
+name: "Update Moku Metadata"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fetches a Moku release from GitHub, extracts the installer URL + SHA-256
+# (via the asset's `digest` field), and writes/updates:
+#   • moku/<version>.json  – full release metadata
+#   • moku/meta.json       – version index & latestVersion pointer
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >
+          Version to fetch, e.g. 0.9.2.
+          Leave empty to use the latest published GitHub release.
+        required: false
+        type: string
+
+jobs:
+  update-metadata:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # needed to push the updated JSON files
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Fetch release via GitHub CLI ────────────────────────────────────
+      - name: Fetch release data
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          PROJECT_URL=$(jq -r '.projectUrl' moku/meta.json)
+          OWNER_REPO="${PROJECT_URL#https://github.com/}"
+
+          if [[ -n "${{ inputs.version }}" ]]; then
+            echo "Fetching release for tag v${{ inputs.version }}"
+            RELEASE=$(gh api "repos/$OWNER_REPO/releases/tags/v${{ inputs.version }}")
+          else
+            echo "Fetching latest release"
+            RELEASE=$(gh api "repos/$OWNER_REPO/releases/latest")
+          fi
+
+          echo "$RELEASE" > /tmp/release.json
+          echo "─── Raw release JSON (trimmed) ───────────────────────────────"
+          echo "$RELEASE" | jq '{tag_name, published_at, html_url, assets: [.assets[] | {name, browser_download_url, digest}]}'
+
+          VERSION=$(echo "$RELEASE"    | jq -r '.tag_name | ltrimstr("v")')
+          TAG_NAME=$(echo "$RELEASE"   | jq -r '.tag_name')
+          PUBLISHED_AT=$(echo "$RELEASE" | jq -r '.published_at | split("T")[0]')
+          HTML_URL=$(echo "$RELEASE"   | jq -r '.html_url')
+
+          # ── find the x64 Windows installer ──────────────────────────────
+          ASSET=$(echo "$RELEASE" | jq -c '.assets[] | select(.name | test("x64-setup\\.exe$"))')
+          if [[ -z "$ASSET" ]]; then
+            echo "::error::No asset matching *x64-setup.exe found in release $TAG_NAME"
+            exit 1
+          fi
+
+          INSTALLER_URL=$(echo "$ASSET" | jq -r '.browser_download_url')
+          DIGEST=$(echo "$ASSET"        | jq -r '.digest // ""')
+
+          if [[ -z "$DIGEST" ]]; then
+            echo "::error::Asset has no 'digest' field – cannot determine SHA-256 without downloading."
+            echo "::error::Verify the release was created after GitHub started publishing digests."
+            exit 1
+          fi
+
+          # digest format: "sha256:<hex>"
+          SHA256=$(echo "$DIGEST" | sed 's/^sha256://' | tr '[:lower:]' '[:upper:]')
+
+          # ── outputs ──────────────────────────────────────────────────────
+          {
+            echo "version=$VERSION"
+            echo "tag_name=$TAG_NAME"
+            echo "published_at=$PUBLISHED_AT"
+            echo "html_url=$HTML_URL"
+            echo "installer_url=$INSTALLER_URL"
+            echo "sha256=$SHA256"
+          } >> "$GITHUB_OUTPUT"
+
+          # Store release-notes body to a file (may contain quotes / newlines)
+          jq -r '.body // ""' /tmp/release.json > /tmp/release_notes.txt
+
+          echo ""
+          echo "✓ Version      : $VERSION"
+          echo "✓ Published    : $PUBLISHED_AT"
+          echo "✓ Installer    : $INSTALLER_URL"
+          echo "✓ SHA-256      : $SHA256"
+
+      # ── 3. Write / overwrite the version JSON file ─────────────────────────
+      - name: Write version JSON  (moku/<version>.json)
+        env:
+          VERSION:           ${{ steps.release.outputs.version }}
+          TAG_NAME:          ${{ steps.release.outputs.tag_name }}
+          PUBLISHED_AT:      ${{ steps.release.outputs.published_at }}
+          INSTALLER_URL:     ${{ steps.release.outputs.installer_url }}
+          SHA256:            ${{ steps.release.outputs.sha256 }}
+          RELEASE_NOTES_URL: ${{ steps.release.outputs.html_url }}
+        run: |
+          python3 - << 'EOF'
+          import json, os
+
+          v     = os.environ["VERSION"]
+          notes = open("/tmp/release_notes.txt").read().strip()
+
+          payload = {
+              "version":         v,
+              "tagName":         os.environ["TAG_NAME"],
+              "publishedAt":     os.environ["PUBLISHED_AT"],
+              "installerUrl":    os.environ["INSTALLER_URL"],
+              "installerSha256": os.environ["SHA256"],
+              "releaseNotesUrl": os.environ["RELEASE_NOTES_URL"],
+              "releaseNotes":    notes,
+          }
+
+          path = f"moku/{v}.json"
+          with open(path, "w", encoding="utf-8") as f:
+              json.dump(payload, f, indent=2, ensure_ascii=False)
+              f.write("\n")
+          print(f"✓ Wrote {path}")
+          EOF
+
+      # ── 4. Update the version index (meta.json) ────────────────────────────
+      - name: Update moku/meta.json
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          python3 - << 'EOF'
+          import json, os
+
+          v = os.environ["VERSION"]
+
+          def vtuple(s):
+              """Parse a semver string into a comparable tuple of ints."""
+              try:
+                  return tuple(int(x) for x in s.split("."))
+              except ValueError:
+                  return (0, 0, 0)
+
+          with open("moku/meta.json", encoding="utf-8") as f:
+              meta = json.load(f)
+
+          # Add new version entry if not already present
+          if not any(e["version"] == v for e in meta.get("versions", [])):
+              meta.setdefault("versions", []).insert(
+                  0, {"version": v, "file": f"moku/{v}.json"}
+              )
+              print(f"✓ Added version {v} to versions list")
+          else:
+              print(f"  Version {v} already in versions list")
+
+          # Advance latestVersion if this release is newer
+          current = meta.get("latestVersion", "0.0.0")
+          if vtuple(v) > vtuple(current):
+              meta["latestVersion"] = v
+              print(f"✓ latestVersion updated: {current} → {v}")
+          else:
+              print(f"  latestVersion unchanged ({current})")
+
+          with open("moku/meta.json", "w", encoding="utf-8") as f:
+              json.dump(meta, f, indent=2)
+              f.write("\n")
+          print("✓ meta.json saved")
+          EOF
+
+      # ── 5. Commit and push ─────────────────────────────────────────────────
+      - name: Commit & push metadata changes
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add moku/
+          if git diff --staged --quiet; then
+            echo "Nothing changed – metadata is already up to date."
+          else
+            git commit -m "chore(moku): update metadata to v${{ steps.release.outputs.version }}"
+            git push
+            echo "✓ Pushed metadata update for v${{ steps.release.outputs.version }}"
+          fi
