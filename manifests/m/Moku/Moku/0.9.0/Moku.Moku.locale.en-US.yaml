@@ -1,53 +1,72 @@
+# Created using wingetcreate 1.12.8.0
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
-
-
 PackageIdentifier: Moku.Moku
-
 PackageVersion: 0.9.0
-
 PackageLocale: en-US
-
 Publisher: Youwes09
-
 PublisherUrl: https://github.com/moku-project/Moku
-
 PublisherSupportUrl: https://github.com/moku-project/Moku/issues
-
 PackageName: Moku
-
 PackageUrl: https://github.com/moku-project/Moku
-
 License: Apache-2.0 license
-
 LicenseUrl: https://github.com/moku-project/Moku?tab=readme-ov-file#readme
-
 ShortDescription: Moku is a fast, minimal manga reader frontend for Suwayomi-Server.
-
-Description: |-
+Description: |2-
 
   Moku is a fast, minimal manga reader frontend for Suwayomi-Server.
 
   It wraps Suwayomi's GraphQL API in a lightweight Tauri app — no Electron overhead.
-
 Moniker: moku
-
 Tags:
-
 - manga-reader
-
 - suwayomi
-
 - tauri
-
 - svelte5
-
 - manga
-
 - manga-downloader
-
+ReleaseNotes: |-
+  # Moku v0.9.0
+  **Released:** April 24, 2026
+  
+  >  **Manual install required for this update.** Due to the overhaul of the update system, v0.9.0 cannot be applied automatically. We apologize for the inconvenience!
+  
+  ## New Features
+  - **UI Overhaul** — Redesigned Home page, History page revamp, and a reworked Layout & Sidebar for a cleaner experience
+  - **Download Queue Management** — Batch select, error/retry support, move-to-top/bottom controls, tooltips, and download notifications (#38)
+  - **Automation Management** — New BulkAutomationPanel with auto-download list derived from filters (#39)
+  - **Per-Manga Reader Settings** — Custom reader settings on a per-manga basis, plus quick Settings access directly from the Reader (#42, #46)
+  - **Pin Sources** — Pin your favorite sources to the top of the Source Tab (#48)
+  - **Library Stats Overhaul** — Always-visible library stats with a full display overhaul (#47)
+  - **Source Install/Uninstall Notifications** — Get notified when extensions are installed or removed (#31)
+  - **Double-Tap for Reader Bar** — Improved touchscreen support with double-tap to toggle the reader bar (#29)
+  - **Import & Export Store** — Backup and restore your data with a new import/export system
+  - **QOL Animations** — Quality-of-life animations added across the app (Extensions, Local Source, and more)
+  - **Settings Descriptions** — Added descriptive labels throughout the Settings panel
+  
+  ## Bug Fixes
+  - Fixed slow thumbnail loading and high latency on non-downloaded manga (#33, #35)
+  - Fixed zoom values turning to NaN in the Reader
+  - Fixed dropdown rendering in Settings
+  - Fixed dark theme on Settings slider
+  - Fixed Library Refresh (#attempt)
+  - Fixed chapter nodes in LibraryUpdater
+  - Fixed Open in File Manager on Windows (#32)
+  - Fixed MacOS directory scan and connection issues (#40)
+  - Fixed Windows installer (TPU removal, WIP) (#41)
+  - Fixed tab boundary issues
+  - Fixed Local Source loading
+  - Fixed Reader optimizations and performance
+  
+  ## Notes
+  - Windows Auto-Installer improvements are ongoing (WIP)
+  - MacOS connection fixes are in testing — please report any remaining issues (#40)
+  - Touchscreen/gesture improvements are continuing — more coming in a future release (#29, #50)
+  
+  **Full Changelog:** https://github.com/Youwes09/Moku/compare/v0.8.0...v0.9.0
 ReleaseNotesUrl: https://github.com/moku-project/Moku/releases/tag/v0.9.0
-
+Documentations:
+- DocumentLabel: Wiki
+  DocumentUrl: https://github.com/moku-project/Moku/wiki
 ManifestType: defaultLocale
-
 ManifestVersion: 1.12.0
