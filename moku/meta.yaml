@@ -1,0 +1,13 @@
+Name: Moku
+
+projectUrl:
+  https://github.com/moku-project/Moku
+
+latest:
+  version: 0.9.1
+  VersionFile:
+    moku/0.9.1.yaml
+
+winget:
+  id: Moku.Moku
+  currentVersion: 0.9.0
