@@ -1,0 +1,9 @@
+{
+  "version": "0.8.0",
+  "tagName": "v0.8.0",
+  "publishedAt": "2026-04-14",
+  "installerUrl": "https://github.com/moku-project/Moku/releases/download/v0.8.0/Moku_0.8.0_x64-setup.exe",
+  "installerSha256": "77C1EA45D669F49B026CFA6F3C6D06218E66E990EF8EFB7D128EE3971108FB51",
+  "releaseNotesUrl": "https://github.com/moku-project/Moku/releases/tag/v0.8.0",
+  "releaseNotes": "# Moku v0.8.0\n**Released:** April 13, 2026\n\n## New Features\n- **Backup & Settings Overhaul** — Complete redesign of the settings system with full backup support\n- **Reader Improvements** — Added pan + zoom support and a bookmarking-based \"Continue Again\" resume feature\n- **Library Enhancements** — View pending manga updates in your library and toggle your default library from the UI\n- **Open in File Explorer** —  Open direct manga locations from your app\n- **Check for Updates** — In-app manga update checker (WIP) with refreshed toaster notifications\n\n## Bug Fixes\n- Fixed chapters loading backwards in infinite scroll mode (#24)\n- Fixed Scanlator Organization with new Enforce & Block modes (#28)\n- Fixed Notification Dismissals (#27)\n- Improved TitleBar on Reader & RTL (#26)\n- Fixed SeriesDetail -> Reader List (#24)\n- Passthrough for LocalHost Requests (WIP) & CSS Fix for Auth (#25)\n- Fixed Flatpak binary detection\n- Improved splash screen scaling on Windows (WIP)\n\n## Notes\n- The update checker is a work-in-progress and may not detect new mangas (Pending Feedback)\n- SplashScreen scaling improvements on Windows are ongoing\n\n**Full Changelog:** https://github.com/Youwes09/Moku/compare/v0.7.1...v0.8.0"
+}
