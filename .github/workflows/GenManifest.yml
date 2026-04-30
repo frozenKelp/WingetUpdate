@@ -198,11 +198,16 @@ jobs:
           #                  format, cosmetic only – safe to proceed)
           # anything else  = genuine failure
           $WARNING_EXIT = -1978335192
+          $WARNING_EXIT_SIGNED   = -1978335192
+          $WARNING_EXIT_UNSIGNED = 2316632104
           if ($exitCode -eq 0) {
             Write-Host "✓ Validation passed (no warnings)"
           } elseif ($exitCode -eq $WARNING_EXIT) {
+            exit 0
+          } elseif (($exitCode -eq $WARNING_EXIT_SIGNED) -or ($exitCode -eq $WARNING_EXIT_UNSIGNED)) {
             Write-Host "⚠ Validation passed with warnings (schema header comment – harmless)."
             Write-Host "  wingetcreate already confirmed the manifest is valid above."
+            exit 0
           } else {
             Write-Error "winget validate failed (exit $exitCode). Fix the manifests before proceeding."
             exit $exitCode
