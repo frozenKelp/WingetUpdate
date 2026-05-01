@@ -1,8 +1,12 @@
 {
   "name": "Moku",
   "projectUrl": "https://github.com/moku-project/Moku",
-  "latestVersion": "0.9.1",
+  "latestVersion": "0.9.2",
   "versions": [
+    {
+      "version": "0.9.2",
+      "file": "moku/0.9.2.json"
+    },
     {
       "version": "0.9.1",
       "file": "moku/0.9.1.json"
