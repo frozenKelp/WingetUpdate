@@ -3,7 +3,7 @@
   "tagName": "v0.9.4",
   "publishedAt": "2026-05-17",
   "installerUrl": "https://github.com/moku-project/Moku/releases/download/v0.9.4/Moku_0.9.4_x64-setup.exe",
-  "installerSha256": "AA3A3228F464848318A187173B7A590C9677F896F78A9D8E901AC5D4835C4777",
+  "installerSha256": "FA8DA645D047AAF118291CD0C3E061C43093042AA1261E89FF842678F2F675BF",
   "releaseNotesUrl": "https://github.com/moku-project/Moku/releases/tag/v0.9.4",
   "releaseNotes": "# Moku v0.9.4\n\n**Released:** May 17, 2026\n\n> \"It can't be buggy this time... right?\n\n## Bug Fixes\n\n- Fixed quit button not functioning (#80)\n- Fixed app launching as multiple simultaneous instances (#83)\n- Fixed UI scale not being applied to context menus on Windows (#82)\n- Fixed global UI zoom incorrectly affecting the manga display (#82)\n- Fixed KCEF cache corruption on boot\n- Fixed reader overlay dragging being blocked\n- Fixed library items being removed after updating to 0.9.3 (#81)\n\n## Notes\n- Authentication rework still in progress — smoother switching between servers and auth modes coming soon (#78)\n- Windows Hello still under evaluation (#49)\n- Touchscreen and gesture improvements ongoing (#29, #50)\n\n**Full Changelog:** https://github.com/moku-project/Moku/compare/v0.9.3...v0.9.4"
 }
