@@ -5,9 +5,14 @@ name: "Update Moku Metadata"
 # (via the asset's `digest` field), and writes/updates:
 #   • moku/<version>.json  – full release metadata
 #   • moku/meta.json       – version index & latestVersion pointer
+#
+# Runs daily. When a new release is recorded it dispatches workflow 2
+# (Generate & Validate Manifests). Submitting the PR stays manual.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
+  schedule:
+    - cron: "17 6 * * *"     # daily
   workflow_dispatch:
     inputs:
       version:
@@ -22,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write        # needed to push the updated JSON files
+      actions: write         # needed to dispatch the manifest workflow
 
     steps:
       # ── 1. Checkout ────────────────────────────────────────────────────────
@@ -33,15 +39,16 @@ jobs:
         id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
 
           PROJECT_URL=$(jq -r '.projectUrl' moku/meta.json)
           OWNER_REPO="${PROJECT_URL#https://github.com/}"
 
-          if [[ -n "${{ inputs.version }}" ]]; then
-            echo "Fetching release for tag v${{ inputs.version }}"
-            RELEASE=$(gh api "repos/$OWNER_REPO/releases/tags/v${{ inputs.version }}")
+          if [[ -n "$INPUT_VERSION" ]]; then
+            echo "Fetching release for tag v$INPUT_VERSION"
+            RELEASE=$(gh api "repos/$OWNER_REPO/releases/tags/v$INPUT_VERSION")
           else
             echo "Fetching latest release"
             RELEASE=$(gh api "repos/$OWNER_REPO/releases/latest")
@@ -172,6 +179,9 @@ jobs:
 
       # ── 5. Commit and push ─────────────────────────────────────────────────
       - name: Commit & push metadata changes
+        id: commit
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -179,7 +189,20 @@ jobs:
           if git diff --staged --quiet; then
             echo "Nothing changed – metadata is already up to date."
           else
-            git commit -m "chore(moku): update metadata to v${{ steps.release.outputs.version }}"
+            git commit -m "chore(moku): update metadata to v$VERSION"
             git push
-            echo "✓ Pushed metadata update for v${{ steps.release.outputs.version }}"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "✓ Pushed metadata update for v$VERSION"
           fi
+
+      # ── 6. Hand off to workflow 2 ──────────────────────────────────────────
+      # A push made with GITHUB_TOKEN doesn't trigger workflows, but
+      # workflow_dispatch does.
+      - name: Dispatch manifest generation
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          gh workflow run GenManifest.yml --ref "${{ github.ref_name }}" -f version="$VERSION"
+          echo "✓ Dispatched Generate & Validate Manifests for v$VERSION"

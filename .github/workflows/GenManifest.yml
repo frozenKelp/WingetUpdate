@@ -35,9 +35,11 @@ jobs:
       - name: Resolve version and load metadata
         id: meta
         shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           $metaRaw  = Get-Content moku/meta.json -Raw | ConvertFrom-Json
-          $version  = "${{ inputs.version }}"
+          $version  = $env:INPUT_VERSION
           if ([string]::IsNullOrWhiteSpace($version)) {
             $version = $metaRaw.latestVersion
           }
@@ -54,6 +56,7 @@ jobs:
           "installer_url=$($vdata.installerUrl)"     >> $env:GITHUB_OUTPUT
           "release_notes_url=$($vdata.releaseNotesUrl)" >> $env:GITHUB_OUTPUT
           "published_at=$($vdata.publishedAt)"       >> $env:GITHUB_OUTPUT
+          "installer_sha256=$($vdata.installerSha256)" >> $env:GITHUB_OUTPUT
 
           # Stash multi-line release notes to a temp file
           $vdata.releaseNotes | Set-Content "$env:TEMP\release_notes.txt" -Encoding UTF8
@@ -65,8 +68,11 @@ jobs:
       - name: Install wingetcreate
         shell: pwsh
         run: |
-          Write-Host "Downloading wingetcreate…"
-          Invoke-WebRequest -Uri "https://aka.ms/wingetcreate/latest" `
+          # Pinned so a new wingetcreate release can't silently change output.
+          # Bump deliberately: https://github.com/microsoft/winget-create/releases
+          $wcVersion = "1.12.13.0"
+          Write-Host "Downloading wingetcreate $wcVersion…"
+          Invoke-WebRequest -Uri "https://github.com/microsoft/winget-create/releases/download/v$wcVersion/wingetcreate.exe" `
                             -OutFile wingetcreate.exe `
                             -UseBasicParsing
           # NOTE: wingetcreate exits 1 for every info/version subcommand — skip the
@@ -118,6 +124,21 @@ jobs:
           Write-Host "✓ Manifests generated:"
           Get-ChildItem $manifestDir | Format-Table Name, Length
 
+      # ── 4b. Cross-check installer hash against GitHub's asset digest ───────
+      - name: Verify installer SHA-256
+        shell: pwsh
+        run: |
+          $manifestDir = "${{ steps.generate.outputs.manifest_dir }}"
+          $expected    = "${{ steps.meta.outputs.installer_sha256 }}"
+          $line = Select-String -Path "$manifestDir/Moku.Moku.installer.yaml" -Pattern '^\s*InstallerSha256:\s*(\S+)' | Select-Object -First 1
+          if (-not $line) { Write-Error "No InstallerSha256 in installer manifest."; exit 1 }
+          $actual = $line.Matches[0].Groups[1].Value
+          if ($actual -ne $expected) {
+            Write-Error "SHA-256 mismatch! manifest=$actual github-digest=$expected"
+            exit 1
+          }
+          Write-Host "✓ SHA-256 matches GitHub digest: $actual"
+
       # ── 5. Post-process: inject ReleaseDate ────────────────────────────────
       - name: Inject ReleaseDate into installer manifest
         shell: pwsh
@@ -127,8 +148,9 @@ jobs:
           $installerYaml = "$manifestDir/Moku.Moku.installer.yaml"
 
           $content = Get-Content $installerYaml -Raw
-          if ($content -notmatch "^ReleaseDate:" -and $content -notmatch "`nReleaseDate:") {
-            $content = $content -replace "(^ManifestType:)", "ReleaseDate: $releaseDate`n`$1"
+          # wingetcreate usually fills this in from the GitHub release; this is a fallback.
+          if ($content -notmatch "(?m)^ReleaseDate:") {
+            $content = $content -replace "(?m)^ManifestType:", "ReleaseDate: $releaseDate`n`$0"
             Set-Content $installerYaml $content -NoNewline
             Write-Host "✓ Added ReleaseDate: $releaseDate"
           } else {
@@ -161,7 +183,18 @@ jobs:
             } else {
               # Indent every line by 2 spaces for the YAML block-scalar body.
               # Use Windows line endings consistently with what wingetcreate wrote.
-              $lines    = $notes.Trim() -split "`r?`n"
+              # winget schema caps ReleaseNotes at 10000 chars; trim on a line boundary
+              # and point to the full notes (ReleaseNotesUrl is in the manifest too).
+              $notes = $notes.Trim()
+              $max   = 9800   # headroom for the suffix
+              if ($notes.Length -gt $max) {
+                $cut   = $notes.Substring(0, $max)
+                $nl    = $cut.LastIndexOf("`n")
+                if ($nl -gt 0) { $cut = $cut.Substring(0, $nl) }
+                $notes = $cut.TrimEnd() + "`n`n… (truncated – see the full release notes at the ReleaseNotesUrl)"
+                Write-Host "⚠ Release notes truncated to $($notes.Length) chars"
+              }
+              $lines    = $notes -split "`r?`n"
               $indented = ($lines | ForEach-Object { "  $_" }) -join "`n"
               $yamlBlock = "ReleaseNotes: |-`n$indented"
 
@@ -197,14 +230,11 @@ jobs:
           #  -1978335192   = 0x89A10008 = passed WITH warnings (schema comment URL
           #                  format, cosmetic only – safe to proceed)
           # anything else  = genuine failure
-          $WARNING_EXIT = -1978335192
-          $WARNING_EXIT_SIGNED   = -1978335192
-          $WARNING_EXIT_UNSIGNED = 2316632104
+          # Same code, seen either signed or unsigned depending on the host.
+          $WARNING_EXITS = @(-1978335192, 2316632104)
           if ($exitCode -eq 0) {
             Write-Host "✓ Validation passed (no warnings)"
-          } elseif ($exitCode -eq $WARNING_EXIT) {
-            exit 0
-          } elseif (($exitCode -eq $WARNING_EXIT_SIGNED) -or ($exitCode -eq $WARNING_EXIT_UNSIGNED)) {
+          } elseif ($WARNING_EXITS -contains $exitCode) {
             Write-Host "⚠ Validation passed with warnings (schema header comment – harmless)."
             Write-Host "  wingetcreate already confirmed the manifest is valid above."
             exit 0
