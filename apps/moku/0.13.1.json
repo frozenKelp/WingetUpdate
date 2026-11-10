@@ -4,6 +4,12 @@
   "publishedAt": "2026-09-20",
   "installerUrl": "https://github.com/moku-project/Moku/releases/download/v0.13.1/Moku_0.13.1_x64-setup.exe",
   "installerSha256": "D0F80344CB031BC25B5EC4A2070C2A9B1916F32AD0A91EE689EC01DF833F9EDF",
+  "installers": [
+    {
+      "url": "https://github.com/moku-project/Moku/releases/download/v0.13.1/Moku_0.13.1_x64-setup.exe",
+      "sha256": "D0F80344CB031BC25B5EC4A2070C2A9B1916F32AD0A91EE689EC01DF833F9EDF"
+    }
+  ],
   "releaseNotesUrl": "https://github.com/moku-project/Moku/releases/tag/v0.13.1",
   "releaseNotes": "# Moku v0.13.1\n**Released:** September 19, 2026\n> \"I don't wanna talk about it...\"\n\n## New Features\n- Moku supports PDFs & docx.\n\n**Full Changelog**: https://github.com/moku-project/Moku/compare/v0.13.0...v0.13.1"
 }

@@ -1,13 +1,17 @@
-name: "Submit PR to winget-pkgs"
+name: "3 · Submit PR to winget-pkgs"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Prerequisite: manifests must already exist in
-#   manifests/m/Moku/Moku/<version>/
-# (generated and committed by workflow 2).
+#   manifests/<x>/<Publisher>/<Package>/<version>/
+# (generated and committed by workflow 2; path derived from the
+# packageIdentifier in apps/<app>/meta.json).
 #
 # This workflow:
+#   0. Runs the safety checks (scripts/preflight.py). ANY problem stops the run
+#      before anything is pushed; GitHub emails you about the failed run and the
+#      run page lists every problem.
 #   1. Syncs frozenKelp/winget-pkgs with upstream microsoft/winget-pkgs
-#   2. Creates branch Update<version> in the fork
+#   2. Creates branch <PackageIdentifier>-<version> in the fork
 #   3. Copies the manifests into the fork
 #   4. Pushes the branch
 #   5. Opens a PR against microsoft/winget-pkgs:master
@@ -20,12 +24,23 @@ name: "Submit PR to winget-pkgs"
 on:
   workflow_dispatch:
     inputs:
+      app:
+        description: App folder name under apps/, e.g. moku
+        required: true
+        type: string
       version:
         description: >
           Version to submit, e.g. 0.9.1.
-          Leave empty to use latestVersion from moku/meta.json.
+          Leave empty to use latestVersion from apps/<app>/meta.json.
         required: false
         type: string
+      accept_changes:
+        description: >
+          I reviewed the "changes vs previous version" a failed run listed and
+          they are intended. (Hash/URL/duplicate problems can never be overridden.)
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   submit-pr:
@@ -42,27 +57,62 @@ jobs:
       # ── 2. Resolve the version to submit ───────────────────────────────────
       - name: Resolve version
         id: ver
+        env:
+          APP: ${{ inputs.app }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           cd WingetUpdate
 
-          VERSION="${{ inputs.version }}"
+          META="apps/$APP/meta.json"
+          if [[ ! "$APP" =~ ^[A-Za-z0-9._-]+$ || ! -f "$META" ]]; then
+            echo "::error::Unknown app '$APP'. Available: $(ls apps | tr '\n' ' ')"
+            exit 1
+          fi
+          ID=$(jq -r '.packageIdentifier' "$META")
+
+          VERSION="$INPUT_VERSION"
           if [[ -z "$VERSION" ]]; then
-            VERSION=$(jq -r '.latestVersion' moku/meta.json)
+            VERSION=$(jq -r '.latestVersion' "$META")
             echo "No version specified – using latestVersion: $VERSION"
           fi
 
-          MANIFEST_DIR="manifests/m/Moku/Moku/$VERSION"
+          # winget layout: manifests/<first letter, lowercase>/<id with . as />/<version>
+          FIRST=$(echo "${ID:0:1}" | tr '[:upper:]' '[:lower:]')
+          MANIFEST_DIR="manifests/$FIRST/${ID//./\/}/$VERSION"
           if [[ ! -d "$MANIFEST_DIR" ]]; then
             echo "::error::Manifest directory '$MANIFEST_DIR' not found."
             echo "::error::Run workflow 2 (Generate Manifests) for v$VERSION first."
             exit 1
           fi
 
+          echo "id=$ID"                         >> "$GITHUB_OUTPUT"
           echo "version=$VERSION"               >> "$GITHUB_OUTPUT"
           echo "manifest_dir=$MANIFEST_DIR"     >> "$GITHUB_OUTPUT"
-          echo "branch=Update$VERSION"          >> "$GITHUB_OUTPUT"
-          echo "✓ Will submit Moku.Moku v$VERSION from $MANIFEST_DIR"
+          echo "branch=$ID-$VERSION"            >> "$GITHUB_OUTPUT"
+          echo "✓ Will submit $ID v$VERSION from $MANIFEST_DIR"
+
+      # ── 2b. Refuse if anyone already has an open PR for this version ───────
+      - name: Check for an existing open PR
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          ID:      ${{ steps.ver.outputs.id }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Any author: our own earlier PR, or someone else's (e.g. the
+          # publisher's own bot) for the same package version.
+          EXISTING=$(gh pr list --repo microsoft/winget-pkgs --state open \
+            --search "$ID $VERSION in:title" --json url,title \
+            --jq '.[] | .url + "  " + .title' | \
+            grep -F "$ID" | grep -E "(^|[^0-9.])${VERSION//./\\.}([^0-9.]|$)" || true)
+          if [[ -n "$EXISTING" ]]; then
+            echo "::error::An open winget-pkgs PR already exists for $ID $VERSION: $EXISTING"
+            echo "## ❌ Stopped: open PR already exists for $ID $VERSION" >> "$GITHUB_STEP_SUMMARY"
+            echo "$EXISTING" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "✓ No open PR for $ID $VERSION"
 
       # ── 3. Sync the fork with upstream ─────────────────────────────────────
       - name: Sync frozenKelp/winget-pkgs with upstream
@@ -88,6 +138,34 @@ jobs:
             winget-pkgs
           echo "✓ Cloned frozenKelp/winget-pkgs"
 
+      # ── 4b. Safety checks – the last gate before anything is pushed ────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Preflight checks
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          APP:      ${{ inputs.app }}
+          VERSION:  ${{ steps.ver.outputs.version }}
+          ACCEPT:   ${{ inputs.accept_changes }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet pyyaml
+          cd WingetUpdate
+          # The checker's own tests run first: a broken checker must not pass anything.
+          python -m unittest scripts/test_preflight.py
+          EXTRA=()
+          [[ "$ACCEPT" == "true" ]] && EXTRA+=(--accept-changes)
+          # Compared against winget-pkgs master (just synced): the version must be
+          # new there and match the last published version's shape.
+          python scripts/preflight.py \
+            --app "$APP" --version "$VERSION" \
+            --manifest-dir "${{ steps.ver.outputs.manifest_dir }}" \
+            --compare-root ../winget-pkgs --upstream \
+            --check-release --download "${EXTRA[@]}"
+
       # ── 5. Create the update branch ────────────────────────────────────────
       - name: Create branch ${{ steps.ver.outputs.branch }}
         working-directory: winget-pkgs
@@ -107,9 +185,8 @@ jobs:
       # ── 6. Copy manifests into the fork ────────────────────────────────────
       - name: Copy manifests
         run: |
-          VERSION="${{ steps.ver.outputs.version }}"
-          SRC="WingetUpdate/manifests/m/Moku/Moku/$VERSION"
-          DST="winget-pkgs/manifests/m/Moku/Moku/$VERSION"
+          SRC="WingetUpdate/${{ steps.ver.outputs.manifest_dir }}"
+          DST="winget-pkgs/${{ steps.ver.outputs.manifest_dir }}"
 
           mkdir -p "$DST"
           cp -v "$SRC/"*.yaml "$DST/"
@@ -121,14 +198,15 @@ jobs:
       - name: Commit manifests
         working-directory: winget-pkgs
         run: |
+          ID="${{ steps.ver.outputs.id }}"
           VERSION="${{ steps.ver.outputs.version }}"
 
           git config user.name  "frozenKelp"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add "manifests/m/Moku/Moku/$VERSION"
+          git add "${{ steps.ver.outputs.manifest_dir }}"
           git status
-          git commit -m "New version: Moku.Moku $VERSION"
+          git commit -m "New version: $ID $VERSION"
           echo "✓ Committed"
 
       # ── 8. Push the branch to the fork ────────────────────────────────────
@@ -148,10 +226,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
+          ID="${{ steps.ver.outputs.id }}"
           VERSION="${{ steps.ver.outputs.version }}"
           BRANCH="${{ steps.ver.outputs.branch }}"
 
-          PR_TITLE="New version: Moku.Moku version $VERSION"
+          PR_TITLE="New version: $ID version $VERSION"
 
           # Write the PR body to a temp file so that the `- [x]` checklist
           # lines never appear as literal YAML inside this workflow file.

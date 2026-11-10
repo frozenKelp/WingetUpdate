@@ -1,10 +1,15 @@
-name: "Generate & Validate Manifests"
+name: "2 · Generate & Validate Manifests"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Reads installer metadata from moku/<version>.json, uses wingetcreate to
-# produce the three YAML manifest files, post-processes them (ReleaseDate,
+# Reads installer metadata from apps/<app>/<version>.json, uses wingetcreate to
+# produce the winget manifest files, post-processes them (ReleaseDate,
 # ReleaseNotes), validates with `winget validate`, then commits the result to
-#   manifests/m/Moku/Moku/<version>/
+#   manifests/<x>/<Publisher>/<Package>/<version>/
+# (path derived from packageIdentifier in apps/<app>/meta.json).
+#
+# If manifests for this version are already committed the run stops, unless
+# `force` is ticked: then the old folder is deleted and regenerated (git keeps
+# the old files, so the commit shows exactly what changed).
 #
 # Does NOT submit a PR – inspect the committed manifests first, then run
 # workflow 3 when you're happy.
@@ -13,12 +18,21 @@ name: "Generate & Validate Manifests"
 on:
   workflow_dispatch:
     inputs:
+      app:
+        description: App folder name under apps/, e.g. moku
+        required: true
+        type: string
       version:
         description: >
           Version to generate manifests for, e.g. 0.9.1.
-          Leave empty to use latestVersion from moku/meta.json.
+          Leave empty to use latestVersion from apps/<app>/meta.json.
         required: false
         type: string
+      force:
+        description: Regenerate even if manifests for this version are already committed
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   generate-manifests:
@@ -31,18 +45,33 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Resolve version & read version JSON ─────────────────────────────
+      # ── 2. Resolve app/version & read version JSON ─────────────────────────
       - name: Resolve version and load metadata
         id: meta
         shell: pwsh
+        env:
+          APP: ${{ inputs.app }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          $metaRaw  = Get-Content moku/meta.json -Raw | ConvertFrom-Json
-          $version  = "${{ inputs.version }}"
+          $app      = $env:APP
+          $metaFile = "apps/$app/meta.json"
+          if ($app -notmatch '^[A-Za-z0-9._-]+$' -or -not (Test-Path $metaFile)) {
+            Write-Error "Unknown app '$app'. Available: $((Get-ChildItem apps -Directory).Name -join ', ')"
+            exit 1
+          }
+          $metaRaw  = Get-Content $metaFile -Raw | ConvertFrom-Json
+          $id       = $metaRaw.packageIdentifier
+          if ([string]::IsNullOrWhiteSpace($id)) {
+            Write-Error "$metaFile has no packageIdentifier."
+            exit 1
+          }
+
+          $version  = $env:INPUT_VERSION
           if ([string]::IsNullOrWhiteSpace($version)) {
             $version = $metaRaw.latestVersion
           }
 
-          $vFile = "moku/$version.json"
+          $vFile = "apps/$app/$version.json"
           if (-not (Test-Path $vFile)) {
             Write-Error "Version file '$vFile' not found. Run workflow 1 (Update Metadata) first."
             exit 1
@@ -50,23 +79,38 @@ jobs:
 
           $vdata = Get-Content $vFile -Raw | ConvertFrom-Json
 
-          "version=$version"                         >> $env:GITHUB_OUTPUT
-          "installer_url=$($vdata.installerUrl)"     >> $env:GITHUB_OUTPUT
-          "release_notes_url=$($vdata.releaseNotesUrl)" >> $env:GITHUB_OUTPUT
-          "published_at=$($vdata.publishedAt)"       >> $env:GITHUB_OUTPUT
+          # Older version files only have the single installerUrl/installerSha256 pair.
+          $installers = @($vdata.installers)
+          if (-not $vdata.installers) {
+            $installers = @([pscustomobject]@{ url = $vdata.installerUrl; sha256 = $vdata.installerSha256 })
+          }
+
+          # winget layout: manifests/<first letter, lowercase>/<id with . as />/<version>
+          $manifestDir = "manifests/$($id.Substring(0,1).ToLower())/$($id -replace '\.', '/')/$version"
+
+          "id=$id"                                          >> $env:GITHUB_OUTPUT
+          "version=$version"                                >> $env:GITHUB_OUTPUT
+          "manifest_dir=$manifestDir"                       >> $env:GITHUB_OUTPUT
+          "installer_urls=$(($installers.url) -join ' ')"   >> $env:GITHUB_OUTPUT
+          "installer_sha256s=$(($installers.sha256) -join ' ')" >> $env:GITHUB_OUTPUT
+          "release_notes_url=$($vdata.releaseNotesUrl)"     >> $env:GITHUB_OUTPUT
+          "published_at=$($vdata.publishedAt)"              >> $env:GITHUB_OUTPUT
 
           # Stash multi-line release notes to a temp file
           $vdata.releaseNotes | Set-Content "$env:TEMP\release_notes.txt" -Encoding UTF8
 
-          Write-Host "✓ Generating manifests for Moku $version"
-          Write-Host "  Installer : $($vdata.installerUrl)"
+          Write-Host "✓ Generating manifests for $id $version"
+          $installers | ForEach-Object { Write-Host "  Installer : $($_.url)" }
 
       # ── 3. Install wingetcreate ────────────────────────────────────────────
       - name: Install wingetcreate
         shell: pwsh
         run: |
-          Write-Host "Downloading wingetcreate…"
-          Invoke-WebRequest -Uri "https://aka.ms/wingetcreate/latest" `
+          # Pinned so a new wingetcreate release can't silently change output.
+          # Bump deliberately: https://github.com/microsoft/winget-create/releases
+          $wcVersion = "1.12.13.0"
+          Write-Host "Downloading wingetcreate $wcVersion…"
+          Invoke-WebRequest -Uri "https://github.com/microsoft/winget-create/releases/download/v$wcVersion/wingetcreate.exe" `
                             -OutFile wingetcreate.exe `
                             -UseBasicParsing
           # NOTE: wingetcreate exits 1 for every info/version subcommand — skip the
@@ -83,15 +127,28 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE: ${{ inputs.force }}
         run: |
+          $id           = "${{ steps.meta.outputs.id }}"
           $version      = "${{ steps.meta.outputs.version }}"
-          $installerUrl = "${{ steps.meta.outputs.installer_url }}"
+          $installerUrls = "${{ steps.meta.outputs.installer_urls }}" -split ' '
           $rnUrl        = "${{ steps.meta.outputs.release_notes_url }}"
 
+          # Never mix freshly generated files with old ones.
+          $manifestDir = "${{ steps.meta.outputs.manifest_dir }}"
+          if (Test-Path $manifestDir) {
+            if ($env:FORCE -ne "true") {
+              Write-Error "Manifests for $id $version already exist in $manifestDir. Re-run with 'force' ticked to regenerate them."
+              exit 1
+            }
+            Write-Host "::warning::force: deleting existing $manifestDir and regenerating"
+            Remove-Item $manifestDir -Recurse -Force
+          }
+
           Write-Host "Running wingetcreate update…"
-          & .\wingetcreate.exe update Moku.Moku `
+          & .\wingetcreate.exe update $id `
               --version             $version `
-              --urls                $installerUrl `
+              --urls                $installerUrls `
               --release-notes-url   $rnUrl `
               --out                 . `
               --token               $env:GH_TOKEN
@@ -101,10 +158,12 @@ jobs:
             exit $LASTEXITCODE
           }
 
-          $manifestDir = "manifests/m/Moku/Moku/$version"
           if (-not (Test-Path $manifestDir)) {
-            # wingetcreate sometimes places output elsewhere – search for it
-            $found = Get-ChildItem -Recurse -Filter "Moku.Moku.yaml" | Select-Object -First 1
+            # wingetcreate sometimes places output elsewhere – search for it,
+            # but only accept a folder for this exact version.
+            $found = Get-ChildItem -Recurse -Filter "$id.yaml" |
+                     Where-Object { $_.Directory.Name -eq $version } |
+                     Select-Object -First 1
             if ($found) {
               Write-Host "Found manifests at: $($found.DirectoryName)"
               $manifestDir = $found.DirectoryName
@@ -114,21 +173,46 @@ jobs:
             }
           }
 
-          "manifest_dir=$manifestDir" >> $env:GITHUB_OUTPUT
-          Write-Host "✓ Manifests generated:"
+          # Default locale file name comes from the version manifest.
+          $defaultLocale = (Select-String -Path "$manifestDir/$id.yaml" -Pattern '^DefaultLocale:\s*(\S+)' |
+                            Select-Object -First 1).Matches[0].Groups[1].Value
+
+          "manifest_dir=$manifestDir"       >> $env:GITHUB_OUTPUT
+          "default_locale=$defaultLocale"   >> $env:GITHUB_OUTPUT
+          Write-Host "✓ Manifests generated (default locale $defaultLocale):"
           Get-ChildItem $manifestDir | Format-Table Name, Length
+
+      # ── 4b. Cross-check installer hashes against GitHub's asset digests ────
+      - name: Verify installer SHA-256
+        shell: pwsh
+        run: |
+          $id          = "${{ steps.meta.outputs.id }}"
+          $manifestDir = "${{ steps.generate.outputs.manifest_dir }}"
+          $expected    = "${{ steps.meta.outputs.installer_sha256s }}" -split ' ' | Sort-Object -Unique
+          $actual      = Select-String -Path "$manifestDir/$id.installer.yaml" -Pattern '^\s*InstallerSha256:\s*(\S+)' |
+                         ForEach-Object { $_.Matches[0].Groups[1].Value.ToUpper() } | Sort-Object -Unique
+          if (-not $actual) { Write-Error "No InstallerSha256 in installer manifest."; exit 1 }
+
+          $diff = Compare-Object @($expected) @($actual)
+          if ($diff) {
+            Write-Error "SHA-256 mismatch! manifest=[$($actual -join ', ')] github-digest=[$($expected -join ', ')]"
+            exit 1
+          }
+          Write-Host "✓ SHA-256 matches GitHub digest: $($actual -join ', ')"
 
       # ── 5. Post-process: inject ReleaseDate ────────────────────────────────
       - name: Inject ReleaseDate into installer manifest
         shell: pwsh
         run: |
-          $manifestDir  = "${{ steps.generate.outputs.manifest_dir }}"
-          $releaseDate  = "${{ steps.meta.outputs.published_at }}"
-          $installerYaml = "$manifestDir/Moku.Moku.installer.yaml"
+          $id            = "${{ steps.meta.outputs.id }}"
+          $manifestDir   = "${{ steps.generate.outputs.manifest_dir }}"
+          $releaseDate   = "${{ steps.meta.outputs.published_at }}"
+          $installerYaml = "$manifestDir/$id.installer.yaml"
 
           $content = Get-Content $installerYaml -Raw
-          if ($content -notmatch "^ReleaseDate:" -and $content -notmatch "`nReleaseDate:") {
-            $content = $content -replace "(^ManifestType:)", "ReleaseDate: $releaseDate`n`$1"
+          # wingetcreate usually fills this in from the GitHub release; this is a fallback.
+          if ($content -notmatch "(?m)^ReleaseDate:") {
+            $content = $content -replace "(?m)^ManifestType:", "ReleaseDate: $releaseDate`n`$0"
             Set-Content $installerYaml $content -NoNewline
             Write-Host "✓ Added ReleaseDate: $releaseDate"
           } else {
@@ -136,7 +220,7 @@ jobs:
           }
 
           Write-Host ""
-          Write-Host "════════ Moku.Moku.installer.yaml (after ReleaseDate step) ════════"
+          Write-Host "════════ $id.installer.yaml (after ReleaseDate step) ════════"
           Get-Content $installerYaml
           Write-Host "════════════════════════════════════════════════════════════════════"
 
@@ -144,8 +228,9 @@ jobs:
       - name: Inject ReleaseNotes into locale manifest
         shell: pwsh
         run: |
+          $id          = "${{ steps.meta.outputs.id }}"
           $manifestDir = "${{ steps.generate.outputs.manifest_dir }}"
-          $localeYaml  = "$manifestDir/Moku.Moku.locale.en-US.yaml"
+          $localeYaml  = "$manifestDir/$id.locale.${{ steps.generate.outputs.default_locale }}.yaml"
           $notesFile   = "$env:TEMP\release_notes.txt"
 
           if (-not (Test-Path $notesFile)) {
@@ -159,9 +244,19 @@ jobs:
             } elseif ($content -match "ReleaseNotes:") {
               Write-Host "  ReleaseNotes already present – skipping"
             } else {
+              # winget schema caps ReleaseNotes at 10000 chars; trim on a line boundary
+              # and point to the full notes (ReleaseNotesUrl is in the manifest too).
+              $notes = $notes.Trim()
+              $max   = 9800   # headroom for the suffix
+              if ($notes.Length -gt $max) {
+                $cut   = $notes.Substring(0, $max)
+                $nl    = $cut.LastIndexOf("`n")
+                if ($nl -gt 0) { $cut = $cut.Substring(0, $nl) }
+                $notes = $cut.TrimEnd() + "`n`n… (truncated – see the full release notes at the ReleaseNotesUrl)"
+                Write-Host "⚠ Release notes truncated to $($notes.Length) chars"
+              }
               # Indent every line by 2 spaces for the YAML block-scalar body.
-              # Use Windows line endings consistently with what wingetcreate wrote.
-              $lines    = $notes.Trim() -split "`r?`n"
+              $lines    = $notes -split "`r?`n"
               $indented = ($lines | ForEach-Object { "  $_" }) -join "`n"
               $yamlBlock = "ReleaseNotes: |-`n$indented"
 
@@ -178,7 +273,7 @@ jobs:
           }
 
           Write-Host ""
-          Write-Host "════════ Moku.Moku.locale.en-US.yaml (after ReleaseNotes step) ════════"
+          Write-Host "════════ $(Split-Path $localeYaml -Leaf) (after ReleaseNotes step) ════════"
           Get-Content $localeYaml
           Write-Host "══════════════════════════════════════════════════════════════════════"
 
@@ -197,14 +292,11 @@ jobs:
           #  -1978335192   = 0x89A10008 = passed WITH warnings (schema comment URL
           #                  format, cosmetic only – safe to proceed)
           # anything else  = genuine failure
-          $WARNING_EXIT = -1978335192
-          $WARNING_EXIT_SIGNED   = -1978335192
-          $WARNING_EXIT_UNSIGNED = 2316632104
+          # Same code, seen either signed or unsigned depending on the host.
+          $WARNING_EXITS = @(-1978335192, 2316632104)
           if ($exitCode -eq 0) {
             Write-Host "✓ Validation passed (no warnings)"
-          } elseif ($exitCode -eq $WARNING_EXIT) {
-            exit 0
-          } elseif (($exitCode -eq $WARNING_EXIT_SIGNED) -or ($exitCode -eq $WARNING_EXIT_UNSIGNED)) {
+          } elseif ($WARNING_EXITS -contains $exitCode) {
             Write-Host "⚠ Validation passed with warnings (schema header comment – harmless)."
             Write-Host "  wingetcreate already confirmed the manifest is valid above."
             exit 0
@@ -212,6 +304,31 @@ jobs:
             Write-Error "winget validate failed (exit $exitCode). Fix the manifests before proceeding."
             exit $exitCode
           }
+
+      # ── 7b. Safety checks before committing ───────────────────────────────
+      # Hard problems (hash/URL/ID/version/date…) stop the commit. Changes vs the
+      # previous version are only warnings here so you can review the committed
+      # files; workflow 3 blocks on them unless you tick accept_changes.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Preflight checks
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP: ${{ inputs.app }}
+          PYTHONUTF8: "1"   # Windows console isn't UTF-8 by default
+        run: |
+          python -m pip install --quiet pyyaml
+          python -m unittest scripts/test_preflight.py
+          if ($LASTEXITCODE -ne 0) { Write-Error "Preflight self-test failed."; exit 1 }
+          python scripts/preflight.py `
+            --app $env:APP --version "${{ steps.meta.outputs.version }}" `
+            --manifest-dir "${{ steps.generate.outputs.manifest_dir }}" `
+            --compare-root . --check-release --accept-changes
+          if ($LASTEXITCODE -ne 0) { Write-Error "Preflight found problems – manifests NOT committed."; exit 1 }
 
       # ── 8. Show final manifest content ────────────────────────────────────
       - name: Display final manifests
@@ -229,6 +346,7 @@ jobs:
       - name: Commit & push manifests
         shell: pwsh
         run: |
+          $id          = "${{ steps.meta.outputs.id }}"
           $version     = "${{ steps.meta.outputs.version }}"
           $manifestDir = "${{ steps.generate.outputs.manifest_dir }}"
 
@@ -240,9 +358,9 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($status)) {
             Write-Host "Nothing changed – manifests already committed."
           } else {
-            git commit -m "feat(manifests): generate Moku.Moku v$version"
+            git commit -m "feat(manifests): generate $id v$version"
             git push
-            Write-Host "✓ Manifests committed and pushed for v$version"
+            Write-Host "✓ Manifests committed and pushed for $id v$version"
             Write-Host ""
             Write-Host "Next step: review the files in $manifestDir, then"
             Write-Host "run workflow '3 · Submit PR to winget-pkgs' when ready."
