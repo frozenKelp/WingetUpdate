@@ -53,6 +53,33 @@ GitHub → Settings → Notifications → Actions.
 
 Run the checker's tests locally: `python3 -m unittest scripts/test_preflight.py`
 
+## Running for a specific app
+
+Each app is a folder under `apps/`. The workflows pick the app from the **`app`** text box, so
+adding an app never requires editing a workflow.
+
+- **GitHub website:** **Actions** tab → pick the workflow → **Run workflow** → type the folder name
+  (e.g. `moku`) in `app`, and optionally a version.
+- **Command line** ([gh](https://cli.github.com)):
+  `gh workflow run UpdateMeta.yml -f app=moku`
+  `gh workflow run GenManifest.yml -f app=moku -f version=0.14.1`
+  `gh workflow run OpenPR.yml -f app=moku -f version=0.14.1`
+
+Run each app separately: one run handles one app and one version.
+
+## Re-running and `force`
+
+Existing data is never overwritten silently:
+
+| Workflow | Data for this version already exists | With **force** ticked |
+|----------|---------------------------------------|-----------------------|
+| 1 | Same as the release now: nothing happens, and workflow 2 isn't started. Differs from the release (e.g. the installer was re-uploaded): the run **stops** and lists what changed. | Overwrites the version file and starts workflow 2 with `force`. |
+| 2 | Manifests already committed: the run **stops**. | Deletes the old folder and regenerates it. The commit shows exactly what changed. |
+| 3 | Version already in winget-pkgs, or an open PR exists: the run **stops** (no override). | – (its override is `accept_changes`) |
+
+To fix a bad version before submitting it, re-run workflow 2 with `force`. Re-run workflow 1 with
+`force` only if the release itself changed.
+
 ## Releasing a new version
 
 1. Run workflow 1 with the app name. Workflow 2 starts automatically afterwards.

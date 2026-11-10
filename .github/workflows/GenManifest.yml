@@ -7,6 +7,10 @@ name: "2 · Generate & Validate Manifests"
 #   manifests/<x>/<Publisher>/<Package>/<version>/
 # (path derived from packageIdentifier in apps/<app>/meta.json).
 #
+# If manifests for this version are already committed the run stops, unless
+# `force` is ticked: then the old folder is deleted and regenerated (git keeps
+# the old files, so the commit shows exactly what changed).
+#
 # Does NOT submit a PR – inspect the committed manifests first, then run
 # workflow 3 when you're happy.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -24,6 +28,11 @@ on:
           Leave empty to use latestVersion from apps/<app>/meta.json.
         required: false
         type: string
+      force:
+        description: Regenerate even if manifests for this version are already committed
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   generate-manifests:
@@ -118,11 +127,23 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE: ${{ inputs.force }}
         run: |
           $id           = "${{ steps.meta.outputs.id }}"
           $version      = "${{ steps.meta.outputs.version }}"
           $installerUrls = "${{ steps.meta.outputs.installer_urls }}" -split ' '
           $rnUrl        = "${{ steps.meta.outputs.release_notes_url }}"
+
+          # Never mix freshly generated files with old ones.
+          $manifestDir = "${{ steps.meta.outputs.manifest_dir }}"
+          if (Test-Path $manifestDir) {
+            if ($env:FORCE -ne "true") {
+              Write-Error "Manifests for $id $version already exist in $manifestDir. Re-run with 'force' ticked to regenerate them."
+              exit 1
+            }
+            Write-Host "::warning::force: deleting existing $manifestDir and regenerating"
+            Remove-Item $manifestDir -Recurse -Force
+          }
 
           Write-Host "Running wingetcreate update…"
           & .\wingetcreate.exe update $id `
@@ -137,7 +158,6 @@ jobs:
             exit $LASTEXITCODE
           }
 
-          $manifestDir = "${{ steps.meta.outputs.manifest_dir }}"
           if (-not (Test-Path $manifestDir)) {
             # wingetcreate sometimes places output elsewhere – search for it,
             # but only accept a folder for this exact version.

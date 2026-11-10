@@ -7,7 +7,11 @@ name: "1 · Update App Metadata"
 #   • apps/<app>/<version>.json  – full release metadata
 #   • apps/<app>/meta.json       – version index & latestVersion pointer
 #
-# Manual only. When metadata changes it dispatches workflow 2
+# An existing apps/<app>/<version>.json is never changed unless `force` is
+# ticked: if the release now differs (e.g. the installer was re-uploaded) the
+# run stops and lists what differs.
+#
+# Manual only. When metadata changes (or `force` is ticked) it dispatches workflow 2
 # (Generate & Validate Manifests) for the same app/version.
 # Submitting the PR (workflow 3) stays manual.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -25,6 +29,13 @@ on:
           Leave empty to use the latest published GitHub release.
         required: false
         type: string
+      force:
+        description: >
+          Overwrite existing data for this version and regenerate its
+          manifests (passed on to workflow 2).
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   update-metadata:
@@ -121,6 +132,7 @@ jobs:
       # ── 3. Write / overwrite the version JSON file ─────────────────────────
       - name: Write version JSON  (apps/<app>/<version>.json)
         env:
+          FORCE:             ${{ inputs.force }}
           APP:               ${{ inputs.app }}
           VERSION:           ${{ steps.release.outputs.version }}
           TAG_NAME:          ${{ steps.release.outputs.tag_name }}
@@ -148,6 +160,20 @@ jobs:
           }
 
           path = f"apps/{app}/{v}.json"
+          if os.path.exists(path):
+              with open(path, encoding="utf-8") as f:
+                  old = json.load(f)
+              diff = sorted(k for k in set(old) | set(payload) if old.get(k) != payload.get(k))
+              if not diff:
+                  print(f"  {path} unchanged")
+              elif os.environ.get("FORCE") != "true":
+                  for k in diff:
+                      print(f"::error::{path}: {k} differs from the release now "
+                            f"(stored {str(old.get(k))[:80]!r}, release {str(payload.get(k))[:80]!r})")
+                  print("::error::Existing data NOT overwritten. If this change is expected, re-run with 'force' ticked.")
+                  raise SystemExit(1)
+              else:
+                  print(f"::warning::force: overwriting {path} (changed: {', '.join(diff)})")
           with open(path, "w", encoding="utf-8") as f:
               json.dump(payload, f, indent=2, ensure_ascii=False)
               f.write("\n")
@@ -223,12 +249,13 @@ jobs:
       # A push made with GITHUB_TOKEN doesn't trigger workflows, but
       # workflow_dispatch does.
       - name: Dispatch manifest generation
-        if: steps.commit.outputs.changed == 'true'
+        if: steps.commit.outputs.changed == 'true' || inputs.force
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APP:      ${{ inputs.app }}
           VERSION:  ${{ steps.release.outputs.version }}
+          FORCE:    ${{ inputs.force }}
           REF:      ${{ github.ref_name }}
         run: |
-          gh workflow run GenManifest.yml --ref "$REF" -f app="$APP" -f version="$VERSION"
+          gh workflow run GenManifest.yml --ref "$REF" -f app="$APP" -f version="$VERSION" -f force="$FORCE"
           echo "✓ Dispatched Generate & Validate Manifests for $APP v$VERSION"
