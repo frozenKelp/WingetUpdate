@@ -1,0 +1,105 @@
+name: "0 · Check All Apps for Updates"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Weekly: for every apps/<app>/meta.json, compare the recorded latestVersion
+# with the app's latest GitHub release. For each app that differs it:
+#   • starts workflow 1 (Update Metadata) for that version, which then
+#     starts workflow 2 (Generate & Validate Manifests);
+#   • opens ONE issue listing all updates (assigned to the repo owner, so
+#     GitHub emails you).
+# It never opens a winget-pkgs PR – review the generated manifests and run
+# workflow 3 yourself for each app.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"     # Mondays 05:23 UTC
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write         # start workflow 1
+      issues: write          # notify via issue
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compare recorded vs. latest release for every app
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF:      ${{ github.ref_name }}
+          OWNER:    ${{ github.repository_owner }}
+          RUNS_URL: ${{ github.server_url }}/${{ github.repository }}/actions
+        run: |
+          set -uo pipefail
+          UPDATES=()   # "app|recorded|latest"
+          ERRORS=()    # "app|message"
+
+          for META in apps/*/meta.json; do
+            APP=$(basename "$(dirname "$META")")
+            PROJECT_URL=$(jq -r '.projectUrl // ""' "$META")
+            PREFIX=$(jq -r '.tagPrefix // "v"' "$META")
+            CURRENT=$(jq -r '.latestVersion // ""' "$META")
+
+            if ! TAG=$(gh api "repos/${PROJECT_URL#https://github.com/}/releases/latest" --jq .tag_name 2>&1); then
+              ERRORS+=("$APP|could not read latest release: ${TAG//$'\n'/ }")
+              echo "::error::$APP: could not read latest release: $TAG"
+              continue
+            fi
+            LATEST="${TAG#"$PREFIX"}"
+
+            if [[ "$LATEST" == "$CURRENT" ]]; then
+              echo "✓ $APP is up to date ($CURRENT)"
+              continue
+            fi
+
+            echo "↑ $APP: recorded ${CURRENT:-none} → latest $LATEST"
+            if gh workflow run UpdateMeta.yml --ref "$REF" -f app="$APP" -f version="$LATEST"; then
+              UPDATES+=("$APP|${CURRENT:-none}|$LATEST")
+            else
+              ERRORS+=("$APP|found $LATEST but could not start workflow 1")
+            fi
+          done
+
+          # ── report ────────────────────────────────────────────────────────
+          if (( ${#UPDATES[@]} == 0 && ${#ERRORS[@]} == 0 )); then
+            echo "## ✅ All apps up to date" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            if (( ${#UPDATES[@]} )); then
+              echo "## 📦 New versions found"
+              echo
+              echo "| App | Recorded | Latest release |"
+              echo "|-----|----------|----------------|"
+              for u in "${UPDATES[@]}"; do IFS='|' read -r a c l <<< "$u"; echo "| \`$a\` | $c | **$l** |"; done
+              echo
+              echo "Workflow 1 (Update Metadata) was started for each, and it starts workflow 2."
+              echo
+              echo "**Next, for each app:**"
+              echo "1. Check the runs in [Actions]($RUNS_URL). A failure opens its own issue."
+              echo "2. Review the committed manifests and test with \`winget install --manifest <folder>\`."
+              echo "3. Run **3 · Submit PR to winget-pkgs** with that \`app\` and version."
+              echo
+            fi
+            if (( ${#ERRORS[@]} )); then
+              echo "## ❌ Problems"
+              echo
+              for e in "${ERRORS[@]}"; do IFS='|' read -r a m <<< "$e"; echo "- \`$a\`: $m"; done
+              echo
+            fi
+            echo "_Run: ${RUNS_URL}/runs/${GITHUB_RUN_ID}_"
+          } > body.md
+          cat body.md >> "$GITHUB_STEP_SUMMARY"
+
+          NAMES=$(for u in "${UPDATES[@]}" "${ERRORS[@]}"; do echo "${u%%|*}"; done | sort -u | paste -sd, -)
+          TITLE="Weekly check $(date -u +%F): ${#UPDATES[@]} update(s), ${#ERRORS[@]} problem(s) – $NAMES"
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file body.md --assignee "$OWNER"
+
+          # A problem also marks this run as failed.
+          (( ${#ERRORS[@]} == 0 ))

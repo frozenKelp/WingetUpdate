@@ -6,13 +6,15 @@ Currently configured: [Moku](https://github.com/moku-project/Moku) (`Moku.Moku`)
 
 ## Pipeline
 
-Every workflow is started by hand from the **Actions** tab. Each one asks for:
+Workflow 0 runs weekly by itself. Workflows 1–3 are started by hand from the **Actions** tab, or
+by the workflow before them. Workflows 1–3 each ask for:
 
 - `app`: the folder name under `apps/`, e.g. `moku`.
 - `version` (optional), e.g. `0.14.1`. Leave it empty to use the latest version.
 
 | # | Workflow | What it does |
 |---|----------|--------------|
+| 0 | **Check All Apps for Updates** (`CheckUpdates.yml`) | Runs every Monday at 05:23 UTC, or by hand. For each app, it compares `latestVersion` in `meta.json` with the latest GitHub release. For each app that differs, it starts workflow 1, then opens **one issue** assigned to you listing the updates. GitHub emails you about the issue. It never opens a winget-pkgs PR. |
 | 1 | **Update App Metadata** (`UpdateMeta.yml`) | Reads the GitHub release, picks the installers using `assetPatterns`, and gets each SHA-256 from GitHub. It writes `apps/<app>/<version>.json` and updates `apps/<app>/meta.json`. If anything changed, it starts workflow 2 for that version. |
 | 2 | **Generate & Validate Manifests** (`GenManifest.yml`) | Runs `wingetcreate update` and checks the installer hashes against GitHub's. It adds the release date and release notes, runs `winget validate`, and commits the result to `manifests/<x>/<Publisher>/<Package>/<version>/`. |
 | 3 | **Submit PR to winget-pkgs** (`OpenPR.yml`) | Syncs the `frozenKelp/winget-pkgs` fork and pushes branch `<PackageIdentifier>-<version>`. Then it opens a PR against `microsoft/winget-pkgs`. It stops if an open PR for that branch already exists. |
@@ -80,9 +82,23 @@ Existing data is never overwritten silently:
 To fix a bad version before submitting it, re-run workflow 2 with `force`. Re-run workflow 1 with
 `force` only if the release itself changed.
 
+## Notifications
+
+You hear about everything through GitHub issues assigned to you, or failed-run emails:
+
+- **Weekly check found updates or couldn't read a release:** one issue listing the apps.
+- **Workflow 1 or 2 failed:** an issue named `❌ <workflow> failed: <app> <version>` with a link to
+  the run. This matters when workflow 0 started the run: GitHub only emails the person who started
+  a run, and here that's a workflow.
+- **Workflow 3 failed:** you started it, so GitHub emails you about the failed run.
+
+Close each issue when you're done with it. GitHub disables scheduled workflows in a repo with no
+activity for 60 days. If workflow 0 stops running, re-enable it in the **Actions** tab.
+
 ## Releasing a new version
 
-1. Run workflow 1 with the app name. Workflow 2 starts automatically afterwards.
+1. Wait for the weekly check's issue, or run workflow 1 with the app name yourself. Workflow 2
+   starts automatically afterwards.
 2. Check the committed manifests, then test them locally:
    `winget install --manifest manifests/<x>/<Publisher>/<Package>/<version>`
 3. Run workflow 3 with the same app name and version.
