@@ -285,6 +285,31 @@ jobs:
             exit $exitCode
           }
 
+      # ── 7b. Safety checks before committing ───────────────────────────────
+      # Hard problems (hash/URL/ID/version/date…) stop the commit. Changes vs the
+      # previous version are only warnings here so you can review the committed
+      # files; workflow 3 blocks on them unless you tick accept_changes.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Preflight checks
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP: ${{ inputs.app }}
+          PYTHONUTF8: "1"   # Windows console isn't UTF-8 by default
+        run: |
+          python -m pip install --quiet pyyaml
+          python -m unittest scripts/test_preflight.py
+          if ($LASTEXITCODE -ne 0) { Write-Error "Preflight self-test failed."; exit 1 }
+          python scripts/preflight.py `
+            --app $env:APP --version "${{ steps.meta.outputs.version }}" `
+            --manifest-dir "${{ steps.generate.outputs.manifest_dir }}" `
+            --compare-root . --check-release --accept-changes
+          if ($LASTEXITCODE -ne 0) { Write-Error "Preflight found problems – manifests NOT committed."; exit 1 }
+
       # ── 8. Show final manifest content ────────────────────────────────────
       - name: Display final manifests
         shell: pwsh

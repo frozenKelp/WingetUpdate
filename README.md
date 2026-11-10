@@ -17,6 +17,42 @@ Every workflow is started by hand from the **Actions** tab. Each one asks for:
 | 2 | **Generate & Validate Manifests** (`GenManifest.yml`) | Runs `wingetcreate update` and checks the installer hashes against GitHub's. It adds the release date and release notes, runs `winget validate`, and commits the result to `manifests/<x>/<Publisher>/<Package>/<version>/`. |
 | 3 | **Submit PR to winget-pkgs** (`OpenPR.yml`) | Syncs the `frozenKelp/winget-pkgs` fork and pushes branch `<PackageIdentifier>-<version>`. Then it opens a PR against `microsoft/winget-pkgs`. It stops if an open PR for that branch already exists. |
 
+## Safety checks
+
+`scripts/preflight.py` runs in workflow 2 before the manifests are committed. It runs again in
+workflow 3 after the fork is synced and before anything is pushed. It lists **every** problem it
+finds. If there is any problem, the run fails without submitting anything. GitHub emails you about
+the failed run, and the run's summary page lists each problem.
+
+**Problems that always block** (no override):
+- The ID, version or manifest type is wrong in any file, a field is empty, a file is unexpected, or
+  a YAML file doesn't parse.
+- An installer URL isn't under `<projectUrl>/releases/download/<tag>/`, or the installer count
+  differs from the release.
+- An installer SHA-256 differs from GitHub's digest. Workflow 3 also downloads each installer again
+  and re-hashes it.
+- The release was changed after the metadata was recorded: it's now a draft or pre-release, or an
+  asset was removed or replaced.
+- `ReleaseDate` differs from the release's publish date or is in the future, or the release notes
+  are missing or too long.
+- The version is already in winget-pkgs, or someone already has an open PR for it.
+- The checker's own tests (`scripts/test_preflight.py`) fail.
+
+**Changes from the previous version** (they block workflow 3 until you review them):
+- Publisher, name, license, moniker, installer type, scope, upgrade behavior or architectures changed.
+- A field was added or dropped.
+- The installer has the same SHA-256 as the previous version.
+- The version is older than one already published.
+
+If you've checked the listed changes and they're intended, re-run workflow 3 with
+**accept_changes** ticked. In workflow 2 these changes are only warnings, so the files are committed
+for you to review.
+
+Make sure GitHub notifications for failed Actions runs are on. They're on by default; check
+GitHub → Settings → Notifications → Actions.
+
+Run the checker's tests locally: `python3 -m unittest scripts/test_preflight.py`
+
 ## Releasing a new version
 
 1. Run workflow 1 with the app name. Workflow 2 starts automatically afterwards.
