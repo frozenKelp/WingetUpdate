@@ -1,13 +1,14 @@
-name: "Submit PR to winget-pkgs"
+name: "3 · Submit PR to winget-pkgs"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Prerequisite: manifests must already exist in
-#   manifests/m/Moku/Moku/<version>/
-# (generated and committed by workflow 2).
+#   manifests/<x>/<Publisher>/<Package>/<version>/
+# (generated and committed by workflow 2; path derived from the
+# packageIdentifier in apps/<app>/meta.json).
 #
 # This workflow:
 #   1. Syncs frozenKelp/winget-pkgs with upstream microsoft/winget-pkgs
-#   2. Creates branch Update<version> in the fork
+#   2. Creates branch <PackageIdentifier>-<version> in the fork
 #   3. Copies the manifests into the fork
 #   4. Pushes the branch
 #   5. Opens a PR against microsoft/winget-pkgs:master
@@ -20,10 +21,14 @@ name: "Submit PR to winget-pkgs"
 on:
   workflow_dispatch:
     inputs:
+      app:
+        description: App folder name under apps/, e.g. moku
+        required: true
+        type: string
       version:
         description: >
           Version to submit, e.g. 0.9.1.
-          Leave empty to use latestVersion from moku/meta.json.
+          Leave empty to use latestVersion from apps/<app>/meta.json.
         required: false
         type: string
 
@@ -43,28 +48,39 @@ jobs:
       - name: Resolve version
         id: ver
         env:
+          APP: ${{ inputs.app }}
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           cd WingetUpdate
 
+          META="apps/$APP/meta.json"
+          if [[ ! "$APP" =~ ^[A-Za-z0-9._-]+$ || ! -f "$META" ]]; then
+            echo "::error::Unknown app '$APP'. Available: $(ls apps | tr '\n' ' ')"
+            exit 1
+          fi
+          ID=$(jq -r '.packageIdentifier' "$META")
+
           VERSION="$INPUT_VERSION"
           if [[ -z "$VERSION" ]]; then
-            VERSION=$(jq -r '.latestVersion' moku/meta.json)
+            VERSION=$(jq -r '.latestVersion' "$META")
             echo "No version specified – using latestVersion: $VERSION"
           fi
 
-          MANIFEST_DIR="manifests/m/Moku/Moku/$VERSION"
+          # winget layout: manifests/<first letter, lowercase>/<id with . as />/<version>
+          FIRST=$(echo "${ID:0:1}" | tr '[:upper:]' '[:lower:]')
+          MANIFEST_DIR="manifests/$FIRST/${ID//./\/}/$VERSION"
           if [[ ! -d "$MANIFEST_DIR" ]]; then
             echo "::error::Manifest directory '$MANIFEST_DIR' not found."
             echo "::error::Run workflow 2 (Generate Manifests) for v$VERSION first."
             exit 1
           fi
 
+          echo "id=$ID"                         >> "$GITHUB_OUTPUT"
           echo "version=$VERSION"               >> "$GITHUB_OUTPUT"
           echo "manifest_dir=$MANIFEST_DIR"     >> "$GITHUB_OUTPUT"
-          echo "branch=Update$VERSION"          >> "$GITHUB_OUTPUT"
-          echo "✓ Will submit Moku.Moku v$VERSION from $MANIFEST_DIR"
+          echo "branch=$ID-$VERSION"            >> "$GITHUB_OUTPUT"
+          echo "✓ Will submit $ID v$VERSION from $MANIFEST_DIR"
 
       # ── 2b. Refuse to clobber an open PR for this version ──────────────────
       - name: Check for an existing open PR
@@ -125,9 +141,8 @@ jobs:
       # ── 6. Copy manifests into the fork ────────────────────────────────────
       - name: Copy manifests
         run: |
-          VERSION="${{ steps.ver.outputs.version }}"
-          SRC="WingetUpdate/manifests/m/Moku/Moku/$VERSION"
-          DST="winget-pkgs/manifests/m/Moku/Moku/$VERSION"
+          SRC="WingetUpdate/${{ steps.ver.outputs.manifest_dir }}"
+          DST="winget-pkgs/${{ steps.ver.outputs.manifest_dir }}"
 
           mkdir -p "$DST"
           cp -v "$SRC/"*.yaml "$DST/"
@@ -139,14 +154,15 @@ jobs:
       - name: Commit manifests
         working-directory: winget-pkgs
         run: |
+          ID="${{ steps.ver.outputs.id }}"
           VERSION="${{ steps.ver.outputs.version }}"
 
           git config user.name  "frozenKelp"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add "manifests/m/Moku/Moku/$VERSION"
+          git add "${{ steps.ver.outputs.manifest_dir }}"
           git status
-          git commit -m "New version: Moku.Moku $VERSION"
+          git commit -m "New version: $ID $VERSION"
           echo "✓ Committed"
 
       # ── 8. Push the branch to the fork ────────────────────────────────────
@@ -166,10 +182,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
+          ID="${{ steps.ver.outputs.id }}"
           VERSION="${{ steps.ver.outputs.version }}"
           BRANCH="${{ steps.ver.outputs.branch }}"
 
-          PR_TITLE="New version: Moku.Moku version $VERSION"
+          PR_TITLE="New version: $ID version $VERSION"
 
           # Write the PR body to a temp file so that the `- [x]` checklist
           # lines never appear as literal YAML inside this workflow file.

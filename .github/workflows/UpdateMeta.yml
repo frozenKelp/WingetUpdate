@@ -1,23 +1,27 @@
-name: "Update Moku Metadata"
+name: "1 · Update App Metadata"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Fetches a Moku release from GitHub, extracts the installer URL + SHA-256
-# (via the asset's `digest` field), and writes/updates:
-#   • moku/<version>.json  – full release metadata
-#   • moku/meta.json       – version index & latestVersion pointer
+# Fetches a GitHub release for the app configured in apps/<app>/meta.json,
+# picks the installer assets matching `assetPatterns`, takes each SHA-256 from
+# the asset's `digest` field, and writes/updates:
+#   • apps/<app>/<version>.json  – full release metadata
+#   • apps/<app>/meta.json       – version index & latestVersion pointer
 #
-# Runs daily. When a new release is recorded it dispatches workflow 2
-# (Generate & Validate Manifests). Submitting the PR stays manual.
+# Manual only. When metadata changes it dispatches workflow 2
+# (Generate & Validate Manifests) for the same app/version.
+# Submitting the PR (workflow 3) stays manual.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
-  schedule:
-    - cron: "17 6 * * *"     # daily
   workflow_dispatch:
     inputs:
+      app:
+        description: App folder name under apps/, e.g. moku
+        required: true
+        type: string
       version:
         description: >
-          Version to fetch, e.g. 0.9.2.
+          Version to fetch, e.g. 0.9.2 (without the tag prefix).
           Leave empty to use the latest published GitHub release.
         required: false
         type: string
@@ -39,16 +43,24 @@ jobs:
         id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP: ${{ inputs.app }}
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
 
-          PROJECT_URL=$(jq -r '.projectUrl' moku/meta.json)
+          META="apps/$APP/meta.json"
+          if [[ ! "$APP" =~ ^[A-Za-z0-9._-]+$ || ! -f "$META" ]]; then
+            echo "::error::Unknown app '$APP'. Available: $(ls apps | tr '\n' ' ')"
+            exit 1
+          fi
+
+          PROJECT_URL=$(jq -r '.projectUrl' "$META")
+          TAG_PREFIX=$(jq -r '.tagPrefix // "v"' "$META")
           OWNER_REPO="${PROJECT_URL#https://github.com/}"
 
           if [[ -n "$INPUT_VERSION" ]]; then
-            echo "Fetching release for tag v$INPUT_VERSION"
-            RELEASE=$(gh api "repos/$OWNER_REPO/releases/tags/v$INPUT_VERSION")
+            echo "Fetching release for tag $TAG_PREFIX$INPUT_VERSION"
+            RELEASE=$(gh api "repos/$OWNER_REPO/releases/tags/$TAG_PREFIX$INPUT_VERSION")
           else
             echo "Fetching latest release"
             RELEASE=$(gh api "repos/$OWNER_REPO/releases/latest")
@@ -58,76 +70,84 @@ jobs:
           echo "─── Raw release JSON (trimmed) ───────────────────────────────"
           echo "$RELEASE" | jq '{tag_name, published_at, html_url, assets: [.assets[] | {name, browser_download_url, digest}]}'
 
-          VERSION=$(echo "$RELEASE"    | jq -r '.tag_name | ltrimstr("v")')
-          TAG_NAME=$(echo "$RELEASE"   | jq -r '.tag_name')
-          PUBLISHED_AT=$(echo "$RELEASE" | jq -r '.published_at | split("T")[0]')
-          HTML_URL=$(echo "$RELEASE"   | jq -r '.html_url')
+          TAG_NAME=$(jq -r '.tag_name' /tmp/release.json)
+          VERSION="${TAG_NAME#"$TAG_PREFIX"}"
+          PUBLISHED_AT=$(jq -r '.published_at | split("T")[0]' /tmp/release.json)
+          HTML_URL=$(jq -r '.html_url' /tmp/release.json)
 
-          # ── find the x64 Windows installer ──────────────────────────────
-          ASSET=$(echo "$RELEASE" | jq -c '.assets[] | select(.name | test("x64-setup\\.exe$"))')
-          if [[ -z "$ASSET" ]]; then
-            echo "::error::No asset matching *x64-setup.exe found in release $TAG_NAME"
+          # ── one installer per pattern; each must match exactly one asset ─
+          echo "[]" > /tmp/installers.json
+          while IFS= read -r PATTERN; do
+            MATCHES=$(jq -c --arg p "$PATTERN" '[.assets[] | select(.name | test($p))]' /tmp/release.json)
+            COUNT=$(echo "$MATCHES" | jq 'length')
+            if [[ "$COUNT" -ne 1 ]]; then
+              echo "::error::Pattern '$PATTERN' matched $COUNT assets in $TAG_NAME (need exactly 1)"
+              exit 1
+            fi
+            URL=$(echo "$MATCHES"    | jq -r '.[0].browser_download_url')
+            DIGEST=$(echo "$MATCHES" | jq -r '.[0].digest // ""')
+            if [[ -z "$DIGEST" ]]; then
+              echo "::error::Asset $URL has no 'digest' field – cannot determine SHA-256 without downloading."
+              exit 1
+            fi
+            # digest format: "sha256:<hex>"
+            SHA256=$(echo "${DIGEST#sha256:}" | tr '[:lower:]' '[:upper:]')
+            jq --arg u "$URL" --arg s "$SHA256" '. + [{url: $u, sha256: $s}]' /tmp/installers.json > /tmp/i.json
+            mv /tmp/i.json /tmp/installers.json
+            echo "✓ Installer : $URL"
+            echo "  SHA-256   : $SHA256"
+          done < <(jq -r '.assetPatterns[]' "$META")
+
+          if [[ "$(jq 'length' /tmp/installers.json)" -eq 0 ]]; then
+            echo "::error::$META has no assetPatterns"
             exit 1
           fi
 
-          INSTALLER_URL=$(echo "$ASSET" | jq -r '.browser_download_url')
-          DIGEST=$(echo "$ASSET"        | jq -r '.digest // ""')
-
-          if [[ -z "$DIGEST" ]]; then
-            echo "::error::Asset has no 'digest' field – cannot determine SHA-256 without downloading."
-            echo "::error::Verify the release was created after GitHub started publishing digests."
-            exit 1
-          fi
-
-          # digest format: "sha256:<hex>"
-          SHA256=$(echo "$DIGEST" | sed 's/^sha256://' | tr '[:lower:]' '[:upper:]')
-
-          # ── outputs ──────────────────────────────────────────────────────
           {
             echo "version=$VERSION"
             echo "tag_name=$TAG_NAME"
             echo "published_at=$PUBLISHED_AT"
             echo "html_url=$HTML_URL"
-            echo "installer_url=$INSTALLER_URL"
-            echo "sha256=$SHA256"
           } >> "$GITHUB_OUTPUT"
 
           # Store release-notes body to a file (may contain quotes / newlines)
           jq -r '.body // ""' /tmp/release.json > /tmp/release_notes.txt
 
           echo ""
+          echo "✓ App          : $APP"
           echo "✓ Version      : $VERSION"
           echo "✓ Published    : $PUBLISHED_AT"
-          echo "✓ Installer    : $INSTALLER_URL"
-          echo "✓ SHA-256      : $SHA256"
 
       # ── 3. Write / overwrite the version JSON file ─────────────────────────
-      - name: Write version JSON  (moku/<version>.json)
+      - name: Write version JSON  (apps/<app>/<version>.json)
         env:
+          APP:               ${{ inputs.app }}
           VERSION:           ${{ steps.release.outputs.version }}
           TAG_NAME:          ${{ steps.release.outputs.tag_name }}
           PUBLISHED_AT:      ${{ steps.release.outputs.published_at }}
-          INSTALLER_URL:     ${{ steps.release.outputs.installer_url }}
-          SHA256:            ${{ steps.release.outputs.sha256 }}
           RELEASE_NOTES_URL: ${{ steps.release.outputs.html_url }}
         run: |
           python3 - << 'EOF'
           import json, os
 
+          app   = os.environ["APP"]
           v     = os.environ["VERSION"]
           notes = open("/tmp/release_notes.txt").read().strip()
+          installers = json.load(open("/tmp/installers.json"))
 
           payload = {
               "version":         v,
               "tagName":         os.environ["TAG_NAME"],
               "publishedAt":     os.environ["PUBLISHED_AT"],
-              "installerUrl":    os.environ["INSTALLER_URL"],
-              "installerSha256": os.environ["SHA256"],
+              # First installer kept in the old single-installer fields.
+              "installerUrl":    installers[0]["url"],
+              "installerSha256": installers[0]["sha256"],
+              "installers":      installers,
               "releaseNotesUrl": os.environ["RELEASE_NOTES_URL"],
               "releaseNotes":    notes,
           }
 
-          path = f"moku/{v}.json"
+          path = f"apps/{app}/{v}.json"
           with open(path, "w", encoding="utf-8") as f:
               json.dump(payload, f, indent=2, ensure_ascii=False)
               f.write("\n")
@@ -135,64 +155,68 @@ jobs:
           EOF
 
       # ── 4. Update the version index (meta.json) ────────────────────────────
-      - name: Update moku/meta.json
+      - name: Update apps/<app>/meta.json
         env:
+          APP:     ${{ inputs.app }}
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           python3 - << 'EOF'
           import json, os
 
-          v = os.environ["VERSION"]
+          app = os.environ["APP"]
+          v   = os.environ["VERSION"]
+          path = f"apps/{app}/meta.json"
 
           def vtuple(s):
-              """Parse a semver string into a comparable tuple of ints."""
+              """Parse a dotted version into a comparable tuple of ints."""
               try:
                   return tuple(int(x) for x in s.split("."))
               except ValueError:
                   return (0, 0, 0)
 
-          with open("moku/meta.json", encoding="utf-8") as f:
+          with open(path, encoding="utf-8") as f:
               meta = json.load(f)
 
           # Add new version entry if not already present
           if not any(e["version"] == v for e in meta.get("versions", [])):
               meta.setdefault("versions", []).insert(
-                  0, {"version": v, "file": f"moku/{v}.json"}
+                  0, {"version": v, "file": f"apps/{app}/{v}.json"}
               )
               print(f"✓ Added version {v} to versions list")
           else:
               print(f"  Version {v} already in versions list")
 
           # Advance latestVersion if this release is newer
-          current = meta.get("latestVersion", "0.0.0")
+          current = meta.get("latestVersion") or "0.0.0"
           if vtuple(v) > vtuple(current):
               meta["latestVersion"] = v
               print(f"✓ latestVersion updated: {current} → {v}")
           else:
               print(f"  latestVersion unchanged ({current})")
 
-          with open("moku/meta.json", "w", encoding="utf-8") as f:
-              json.dump(meta, f, indent=2)
+          with open(path, "w", encoding="utf-8") as f:
+              json.dump(meta, f, indent=2, ensure_ascii=False)
               f.write("\n")
-          print("✓ meta.json saved")
+          print(f"✓ {path} saved")
           EOF
 
       # ── 5. Commit and push ─────────────────────────────────────────────────
       - name: Commit & push metadata changes
         id: commit
         env:
+          APP:     ${{ inputs.app }}
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add moku/
+          git add "apps/$APP/"
           if git diff --staged --quiet; then
             echo "Nothing changed – metadata is already up to date."
           else
-            git commit -m "chore(moku): update metadata to v$VERSION"
+            git commit -m "chore($APP): update metadata to v$VERSION"
             git push
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "✓ Pushed metadata update for v$VERSION"
+            echo "✓ Pushed metadata update for $APP v$VERSION"
           fi
 
       # ── 6. Hand off to workflow 2 ──────────────────────────────────────────
@@ -202,7 +226,9 @@ jobs:
         if: steps.commit.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.release.outputs.version }}
+          APP:      ${{ inputs.app }}
+          VERSION:  ${{ steps.release.outputs.version }}
+          REF:      ${{ github.ref_name }}
         run: |
-          gh workflow run GenManifest.yml --ref "${{ github.ref_name }}" -f version="$VERSION"
-          echo "✓ Dispatched Generate & Validate Manifests for v$VERSION"
+          gh workflow run GenManifest.yml --ref "$REF" -f app="$APP" -f version="$VERSION"
+          echo "✓ Dispatched Generate & Validate Manifests for $APP v$VERSION"
