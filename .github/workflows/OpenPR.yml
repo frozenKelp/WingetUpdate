@@ -42,11 +42,13 @@ jobs:
       # ── 2. Resolve the version to submit ───────────────────────────────────
       - name: Resolve version
         id: ver
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           cd WingetUpdate
 
-          VERSION="${{ inputs.version }}"
+          VERSION="$INPUT_VERSION"
           if [[ -z "$VERSION" ]]; then
             VERSION=$(jq -r '.latestVersion' moku/meta.json)
             echo "No version specified – using latestVersion: $VERSION"
@@ -63,6 +65,22 @@ jobs:
           echo "manifest_dir=$MANIFEST_DIR"     >> "$GITHUB_OUTPUT"
           echo "branch=Update$VERSION"          >> "$GITHUB_OUTPUT"
           echo "✓ Will submit Moku.Moku v$VERSION from $MANIFEST_DIR"
+
+      # ── 2b. Refuse to clobber an open PR for this version ──────────────────
+      - name: Check for an existing open PR
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          BRANCH="${{ steps.ver.outputs.branch }}"
+          EXISTING=$(gh pr list --repo microsoft/winget-pkgs --author frozenKelp \
+            --state open --json url,headRefName \
+            --jq ".[] | select(.headRefName == \"$BRANCH\") | .url")
+          if [[ -n "$EXISTING" ]]; then
+            echo "::error::An open PR already exists for $BRANCH: $EXISTING"
+            echo "::error::Close it first if you really want to resubmit."
+            exit 1
+          fi
+          echo "✓ No open PR for $BRANCH"
 
       # ── 3. Sync the fork with upstream ─────────────────────────────────────
       - name: Sync frozenKelp/winget-pkgs with upstream
