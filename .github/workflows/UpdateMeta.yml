@@ -43,6 +43,7 @@ jobs:
     permissions:
       contents: write        # needed to push the updated JSON files
       actions: write         # needed to dispatch the manifest workflow
+      issues: write          # report failures
 
     steps:
       # ── 1. Checkout ────────────────────────────────────────────────────────
@@ -259,3 +260,22 @@ jobs:
         run: |
           gh workflow run GenManifest.yml --ref "$REF" -f app="$APP" -f version="$VERSION" -f force="$FORCE"
           echo "✓ Dispatched Generate & Validate Manifests for $APP v$VERSION"
+
+      # ── On failure: open an issue so you hear about it even when this run
+      #    was started by another workflow (GitHub only emails the person who
+      #    started a run, and a workflow isn't a person).
+      - name: Report failure
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER:    ${{ github.repository_owner }}
+          WHAT:     "1 · Update Metadata"
+          APP:      ${{ inputs.app }}
+          VERSION:  ${{ inputs.version }}
+          RUN_URL:  ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          printf '%s\n\n%s\n' "**$WHAT** failed for \`$APP\` ${VERSION:-latest}." \
+            "See the run summary and the red step for details: $RUN_URL" > failure.md
+          gh issue create --repo "$GITHUB_REPOSITORY" --assignee "$OWNER" \
+            --title "❌ $WHAT failed: $APP ${VERSION:-latest}" --body-file failure.md
