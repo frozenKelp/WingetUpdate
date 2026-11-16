@@ -1,0 +1,16 @@
+# Created using wingetcreate 1.12.13.0
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+
+PackageIdentifier: Moku.Moku
+PackageVersion: 0.15.0
+InstallerLocale: en-US
+InstallerType: nullsoft
+Scope: user
+UpgradeBehavior: uninstallPrevious
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/moku-project/Moku/releases/download/v0.15.0/Moku_0.15.0_x64-setup.exe
+  InstallerSha256: 2E5A259F3EA7502EFAD6A2EAC12FD5370EA26C563652F93494DE55D1DBE9EE98
+ManifestType: installer
+ManifestVersion: 1.12.0
+ReleaseDate: 2026-11-16

@@ -1,0 +1,88 @@
+# Created using wingetcreate 1.12.13.0
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
+
+PackageIdentifier: Moku.Moku
+PackageVersion: 0.15.0
+PackageLocale: en-US
+Publisher: Youwes09
+PublisherUrl: https://github.com/moku-project/Moku
+PublisherSupportUrl: https://github.com/moku-project/Moku/issues
+PackageName: Moku
+PackageUrl: https://github.com/moku-project/Moku
+License: Apache-2.0 license
+LicenseUrl: https://github.com/moku-project/Moku?tab=readme-ov-file#readme
+ShortDescription: Moku is a fast, minimal manga reader frontend for Suwayomi-Server.
+Description: |2-
+
+  Moku is a fast, minimal manga reader frontend for Suwayomi-Server.
+
+  It wraps Suwayomi's GraphQL API in a lightweight Tauri app — no Electron overhead.
+Moniker: moku
+Tags:
+- manga-reader
+- suwayomi
+- tauri
+- svelte5
+- manga
+- manga-downloader
+ReleaseNotes: |-
+  # Moku v0.15.0
+  **Released:** November 16, 2026
+  > "Your library, on every device."
+  
+  ## Highlights
+  - **Moku Sync**: pair your computer, phone and tablet over the local network and keep library, progress, bookmarks, folders and history in sync, with no account or cloud server
+  - **Reading history and stats from the server**: history, stats and resume points now live in Tsunagu, so they follow you across devices and survive reinstalls
+  - **Translatable interface**: every screen now goes through translations, with an app language setting in Settings → General
+  - **New leaf icon and banners**
+  
+  ## New Features
+  - Added a Sync tab to find nearby devices, pair with a code, preview what a pairing brings in, and rename or remove devices
+  - Synced titles a device is missing are fetched automatically, and extensions they need are installed
+  - Same-name folders are merged across devices
+  - Resume at the same page on any device
+  - Added an app language setting and a guide for adding languages (`docs/TRANSLATING.md`)
+  - Added installing extensions from a local file (#130)
+  - Added a bookmarked count and library filter
+  
+  ## Improvements
+  - Folders settings now live under Library, and Dev Tools under About
+  - Opening a title's chapter list no longer counts as a view
+  - Library listings can skip the server's content filter for clients that filter on their own
+  - DASH streams can be served as HLS for players that need it
+  - Server shutdown waits only a short grace period
+  - Per-series automation rules are kept when migrating a series
+  - Novel plugins share the source's cookie jar, and source cookies stay on their own host
+  - Bundled Tsunagu updated to 0.8.0
+  
+  ## Bug Fixes
+  - Fixed the UI scaling with window size (#132)
+  - Fixed extensions that need a protobuf decoder or a main dispatcher failing to load (Tsunagu#7)
+  - Fixed a device redialing a peer it was already connected to
+  - Fixed a refusal from an unknown device being treated as being unpaired
+  - Fixed a title's running update making a second update fail instead of waiting
+  - Fixed metadata matching titles that aren't in the library
+  - Fixed tracker dates not being pushed, and existing start dates being overwritten
+  - Fixed SVG covers not being cached
+  - Fixed FlareSolverr's page not being served when Cloudflare rejects the clearance
+  - Fixed config sync crashing on a bind-mounted `tsunagu.toml`
+  - Fixed type checking under TypeScript 7 and the issues it found, including pdf rendering on newer pdf.js
+  
+  ## Notes
+  - Moku Sync uses port `6008` (TCP) and mDNS (UDP `5353`). If a device can't be reached, allow those through the firewall. On NixOS: `networking.firewall.allowedTCPPorts = [ 6008 ]` and `allowedUDPPorts = [ 5353 ]`
+  - Moku Sync works with Moku for Android 0.2.0 and Moku for iOS
+  - English is the only bundled language so far. Translations are welcome, see `docs/TRANSLATING.md`
+  - Moku Sync is new and needs broader testing, please report any issues
+  - Cloudflare/FlareSolverr support is functional but pending broader user testing
+  - Anime player upscaling is still work in progress and untested
+  
+  ## Contributors
+  - @LeafGithub fixed the UI scaling with window size in #132
+  
+  **Full Changelog:** https://github.com/moku-project/Moku/compare/v0.14.1...v0.15.0
+ReleaseNotesUrl: https://github.com/moku-project/Moku/releases/tag/v0.15.0
+Documentations:
+- DocumentLabel: Wiki
+  DocumentUrl: https://github.com/moku-project/Moku/wiki
+ManifestType: defaultLocale
+ManifestVersion: 1.12.0
