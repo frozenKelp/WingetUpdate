@@ -6,8 +6,12 @@
   "assetPatterns": [
     "x64-setup\\.exe$"
   ],
-  "latestVersion": "0.14.1",
+  "latestVersion": "0.15.0",
   "versions": [
+    {
+      "version": "0.15.0",
+      "file": "apps/moku/0.15.0.json"
+    },
     {
       "version": "0.14.1",
       "file": "apps/moku/0.14.1.json"
